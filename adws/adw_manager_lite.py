@@ -13,6 +13,7 @@ Same orchestration loop as adw_manager.py but trimmed for cheap, quick runs:
 - No manager-help extension folding (lighter history)
 - Shorter decision prompt (no disabled-agent note, minimal context)
 - Cheaper default thinking (config: manager-lite sets thinking: minimal)
+- Decide guardrails: 15-min deadline, 60 tool calls, 6 identical-call streak
 
 Suitable for small tasks ("add a /health endpoint", "fix the button"),
 demo runs, and cost-conscious users. For big multi-agent builds use the
@@ -24,6 +25,7 @@ Permissions are enforced on every phase either way.
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -33,6 +35,20 @@ from adw_modules.data_types import (AgentCall, GenericOutput, ManagerDecision,
 
 REQUIRED_AGENTS = ["manager-lite"]
 MAX_PHASES = 10                     # hard cap — lite stays bounded and cheap
+
+# Decide-phase guardrails (enforced in agent_pi.run via agents.execute): a
+# manager that loops on identical tool calls or overruns its deadline is
+# killed mid-turn, given ONE corrective retry, then the run fails. Observed:
+# a decide_1 phase stuck 40 min on 242x the same grep. Tune via env.
+def _int_env(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, "") or default)
+    except ValueError:
+        return default
+
+DECIDE_TIMEOUT_SEC = _int_env("SSSF_DECIDE_TIMEOUT_SEC", 900)          # 15 min
+DECIDE_MAX_TOOL_CALLS = _int_env("SSSF_DECIDE_MAX_TOOL_CALLS", 60)     # per decide
+DECIDE_MAX_IDENTICAL = _int_env("SSSF_DECIDE_MAX_IDENTICAL_TOOL_CALLS", 6)
 
 HISTORY_FILE = "run_history.json"
 
@@ -97,12 +113,25 @@ def main(prompt: str, config: str = "adws/adw_sssf_config/sssf.config.yaml",
         with run.phase(PhaseParams(
                 name=f"decide_{i}", kind="agent", owner=manager_name,
                 description="Review the run so far and pick the next phase",
-                retries=1)) as ph:
-            decision = ph.call(AgentCall(
-                output_type=ManagerDecision,
-                prompt=_manager_prompt(run, prompt, history),
-                previous=last_envelope,
-                gates=[gates.decision_wellformed]))
+                retries=1,
+                timeout_sec=DECIDE_TIMEOUT_SEC,
+                max_tool_calls=DECIDE_MAX_TOOL_CALLS,
+                max_identical_tool_calls=DECIDE_MAX_IDENTICAL)) as ph:
+            try:
+                decision = ph.call(AgentCall(
+                    output_type=ManagerDecision,
+                    prompt=_manager_prompt(run, prompt, history),
+                    previous=last_envelope,
+                    gates=[gates.decision_wellformed]))
+            except BaseException as error:
+                # A decide that can't conclude (e.g. guardrail abort twice) must
+                # close the run cleanly — never leave it stuck 'running'.
+                history.append({"kind": "manager", "owner": manager_name,
+                                "status": "fail", "error": str(error)[:300]})
+                _save_history(run, history)
+                return run.finish(accepted=False,
+                                  reason=f"manager-lite decide failed: {str(error)[:200]}",
+                                  require_all_phases=False)
         history.append({"kind": "manager", "owner": manager_name, "status": "success",
                         "summary": f"decided -> {decision.next_phase}: "
                                    f"{(decision.reason or decision.task)[:200]}"})
