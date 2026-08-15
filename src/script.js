@@ -988,10 +988,11 @@ function renderCalculatorSubTab() {
 
 function updateCalcResultDisplay() {
   const resEl = document.getElementById('calc-result');
-  if (resEl) {
-    let vol = pipeLen * 0.0408 * Math.pow(parseFloat(pipeSize || 1), 2);
-    resEl.innerText = `${vol.toFixed(2)} Gallons`;
-  }
+  const weightEl = document.getElementById('calc-weight');
+  let vol = pipeLen * 0.0408 * Math.pow(parseFloat(pipeSize || 1), 2);
+  let waterWeight = vol * 8.34;
+  if (resEl) resEl.innerText = `${vol.toFixed(2)} Gallons`;
+  if (weightEl) weightEl.innerText = `${waterWeight.toFixed(1)} lbs`;
 }
 
 function updateChlorDisplay() {
@@ -1333,6 +1334,436 @@ function renderMasterReport() {
       </div>
     </div>
   `; 
+}
+
+
+// ============================================================
+// AI DIAGNOSTICS MODULE (Offline Knowledge Base - Vanilla JS port)
+// ============================================================
+let aiInput = '';
+
+const expertKnowledgeBase = {
+  grundfos: {
+    aliases: ['grundfos', 'cue', 'cue100', 'inverter'],
+    topics: {
+      programming: {
+        triggers: ['program', 'setup', 'set', 'wizard', 'commission', 'parameters', 'p017', 'p020'],
+        content: "<b>Grundfos CUE 100 VFD Commissioning & Programming Guide:</b><br>" +
+                 "• <b>Initial Startup Wizard:</b> Power on the unit and use the graphical control panel (LCP) to follow the Startup Wizard. Enter motor data from nameplate: Voltage, Frequency, Full Load Amps (FLA), Nominal RPM, and Motor Power.<br>" +
+                 "• <b>Parameter P017 (Motor Rated Current):</b> Verify and enter exact motor nameplate amperage.<br>" +
+                 "• <b>Parameter P020 (Dry Run Threshold):</b> Set low current or low power threshold to protect against dry well conditions.<br>" +
+                 "• <b>Closed-Loop Pressure Setpoint:</b> Navigate to controller settings, select Constant Pressure control mode, and set target pressure (e.g., 50 PSI)."
+      },
+      diagnostics: {
+        triggers: ['alarm', 'a01', 'a03', 'a04', 'overcurrent', 'dry run', 'error', 'fault', 'code'],
+        content: "<b>Grundfos CUE 100 VFD Diagnostics & Alarms:</b><br>" +
+                 "• <b>Alarm A01 (Overcurrent):</b> Verify motor rated current in P017, check star/delta connections, and re-run motor FOC calibration.<br>" +
+                 "• <b>Alarm A03 (Over Temperature):</b> Check heat sink dissipation channels, ensure ambient temp is below 50°C (122°F), and verify cooling fans.<br>" +
+                 "• <b>Alarm A04 (Dry Run):</b> Check priming or adjust parameter P020 Dry Run Threshold."
+      }
+    }
+  },
+  pentek: {
+    aliases: ['pentek', 'intellidrive', 'pid10', 'pid20', 'pid30', 'pid50', 'vfd', 'inverter'],
+    topics: {
+      faults: {
+        triggers: ['fault', 'error', 'code', 'list', 'all', 'overcurrent', 'dry run', 'transducer', 'undervoltage', 'trip', 'alarm'],
+        content: "<b>Pentek Intellidrive Complete Fault & Error Code Directory:</b><br>" +
+                 "• <b>Over Current:</b> Motor current exceeds parameter limits. Check for shorted motor cables, insulation breakdown with a megger, or binding pump bearings. Verify SFA (Service Factor Amps) on nameplate.<br>" +
+                 "• <b>Under Current / Dry Run:</b> Occurs when motor load drops below threshold (loss of prime or dry well). Check water table and foot valve.<br>" +
+                 "• <b>Open / Shorted Transducer:</b> Sensor signal lost or out of range (4-20mA). Verify red wire in AI+, black wire in AI-, and shield connected properly.<br>" +
+                 "• <b>Overvoltage / Undervoltage:</b> DC bus voltage out of limits. Check incoming L1/L2 voltage stability and supply transformer taps.<br>" +
+                 "• <b>Over Temperature:</b> Inverter heatsink exceeds safe operating limit (>85°C). Clean cooling fins and check enclosure ventilation.<br>" +
+                 "• <b>Reset Procedure:</b> Enter password (default <b>7777</b>), navigate to Main Menu, select Reset, and change setting from 'No' to 'Yes'."
+      },
+      setup: {
+        triggers: ['setup', 'program', 'wiring', 'parameters', 'sfa', 'phase', 'connect'],
+        content: "<b>Pentek Intellidrive Initial Setup Guide:</b><br>" +
+                 "• <b>Motor Phase:</b> Select 1-Phase (2-wire or 3-wire) or 3-phase.<br>" +
+                 "• <b>Service Factor Amps (SFA):</b> Enter exact SFA from motor nameplate.<br>" +
+                 "• <b>Transducer Wiring:</b> 4-20mA sensor. Red wire to <b>AI+</b>, black wire to <b>AI-</b>, shield to metal cable shield screw downstream of tank."
+      }
+    }
+  },
+  clack: {
+    aliases: ['clack', 'ws1', 'ws1.25', 'valve', 'piston', 'regenerate', 'brine'],
+    topics: {
+      programming: {
+        triggers: ['program', 'set', 'setup', 'hardness', 'gpg', 'cycle', 'time'],
+        content: "<b>Clack WS1 / WS1.25 Programming Guide:</b><br>" +
+                 "• <b>OEM Setup:</b> Press <b>NEXT</b> and <b>DOWN</b> simultaneously for 3 seconds.<br>" +
+                 "• <b>Valve Type & Capacity:</b> Select Softening/Filtering, set GPG hardness (1-150 range), and Day Override (1-28 days or OFF).<br>" +
+                 "• <b>Regeneration Time:</b> Set hour/minute for low water usage (default 2:00 AM).<br>" +
+                 "• <b>Quick Exit:</b> Press <b>SET CLOCK</b> to save all parameters."
+      },
+      errors: {
+        triggers: ['error', 'fault', 'code', 'err 1', 'err 2', 'err 3', 'stalled', 'encoder'],
+        content: "<b>Clack Error Codes & Troubleshooting:</b><br>" +
+                 "• <b>Err 1 / E1 (Cycle Step Failure):</b> Optical encoder cannot read main gear position. Inspect drive bracket, optical eye for debris, and motor connection.<br>" +
+                 "• <b>Err 2 / E2 (Stalled Motor):</b> Motor ran too short and failed to find next cycle position. Inspect piston and seal/stack assembly for binding or foreign debris.<br>" +
+                 "• <b>Err 3 / E3 (Run-on Timeout):</b> Motor ran too long trying to find home position. Check drive bracket alignment and gear meshing.<br>" +
+                 "• <b>Master Reset:</b> Unplug power, press and hold NEXT and REGEN simultaneously while plugging back in."
+      }
+    }
+  }
+};
+
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function processNaturalLanguageQuery(query) {
+  let q = query.toLowerCase();
+  let bestMatch = null;
+  let highestScore = 0;
+
+  for (let brandKey in expertKnowledgeBase) {
+    let brandObj = expertKnowledgeBase[brandKey];
+    let brandMatched = brandObj.aliases.some(alias => q.includes(alias));
+    let brandBonus = brandMatched ? 5 : 1;
+
+    for (let topicKey in brandObj.topics) {
+      let topicObj = brandObj.topics[topicKey];
+      let triggerScore = 0;
+      topicObj.triggers.forEach(trigger => {
+        if (q.includes(trigger)) triggerScore += 3;
+      });
+
+      let totalScore = triggerScore * brandBonus;
+      if (totalScore > highestScore) {
+        highestScore = totalScore;
+        bestMatch = topicObj.content;
+      }
+    }
+  }
+
+  if (highestScore > 0 && bestMatch) return bestMatch;
+  return `<b>AquaFlow Expert Analysis:</b><br>I've reviewed your query regarding <i>"${escapeHtml(query)}"</i>. For precise troubleshooting:<br>• Verify incoming 230V power supply across L1 and L2.<br>• Check motor winding resistance with an ohmmeter for balance.<br>• Inspect sensor wiring and shield grounding.`;
+}
+
+function aiMessageHtml(msg) {
+  const isUser = msg.role === 'user';
+  const text = isUser ? escapeHtml(msg.parts[0].text) : msg.parts[0].text;
+  return `
+    <div class="flex ${isUser ? 'justify-end' : 'justify-start'}">
+      <div class="max-w-[85%] p-4 rounded-2xl text-sm ${isUser ? 'bg-blue-600 text-white rounded-br-none' : 'bg-slate-900 border border-slate-700 text-slate-200 rounded-bl-none'}">${text}</div>
+    </div>
+  `;
+}
+
+function renderChatList() {
+  const list = document.getElementById('ai-chat-list');
+  if (!list) return;
+  list.innerHTML = aiChatHistory.map(msg => aiMessageHtml(msg)).join('');
+  list.scrollTop = list.scrollHeight;
+}
+
+function handleSendAi() {
+  const input = document.getElementById('ai-input');
+  const query = (input ? input.value : aiInput || '').trim();
+  if (!query) return;
+  aiInput = '';
+  if (input) input.value = '';
+  aiChatHistory.push({ role: 'user', parts: [{ text: query }] });
+  renderChatList();
+  setTimeout(() => {
+    const reply = processNaturalLanguageQuery(query);
+    aiChatHistory.push({ role: 'model', parts: [{ text: reply }] });
+    renderChatList();
+  }, 300);
+}
+
+function renderAI() {
+  return `
+    <div class="space-y-4 max-w-4xl mx-auto flex flex-col" style="height: calc(100vh - 230px); min-height: 480px;">
+      <div class="border-b border-slate-700 pb-3 flex items-center justify-between">
+        <div>
+          <h2 class="text-2xl font-black text-white flex items-center gap-2">
+            <i data-lucide="bot" class="w-7 h-7 text-teal-400"></i> AquaFlow AI Expert
+          </h2>
+          <p class="text-sm text-slate-400">Offline Knowledge Base for Grundfos, Pentek, and Clack valves.</p>
+        </div>
+      </div>
+
+      <div id="ai-chat-list" class="flex-1 bg-slate-800 border border-slate-700 rounded-2xl p-4 overflow-y-auto space-y-4 shadow-xl" style="min-height: 300px;">
+        ${aiChatHistory.map(msg => aiMessageHtml(msg)).join('')}
+      </div>
+
+      <div class="flex gap-2">
+        <input
+          type="text"
+          id="ai-input"
+          placeholder="Ask about Pentek faults, Grundfos CUE setup, or Clack codes..."
+          oninput="aiInput=this.value"
+          onkeydown="if(event.key==='Enter') handleSendAi()"
+          class="flex-1 bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 text-white text-sm focus:outline-none focus:border-teal-500"
+        />
+        <button onclick="handleSendAi()" aria-label="Send message" class="bg-teal-600 hover:bg-teal-500 text-white px-5 rounded-xl font-semibold flex items-center justify-center shadow transition-all">
+          <i data-lucide="send" class="w-4 h-4"></i>
+        </button>
+      </div>
+    </div>
+  `;
+}
+
+// ============================================================
+// WATER TEST MODULE (Field Kit Analysis)
+// ============================================================
+function waterTestAssessment() {
+  let hardnessLevel = testHardness < 1 ? 'Soft' : testHardness <= 3.5 ? 'Slightly Hard' : testHardness <= 7 ? 'Moderately Hard' : testHardness <= 10.5 ? 'Hard' : 'Very Hard';
+  let hardnessColor = testHardness <= 3.5 ? 'text-emerald-400' : testHardness <= 7 ? 'text-amber-400' : 'text-rose-400';
+  let phStatus = testPh < 6.5 ? 'Acidic (Corrosive)' : testPh <= 8.5 ? 'Ideal Range' : 'Alkaline';
+  let phColor = testPh < 6.5 ? 'text-rose-400' : testPh <= 8.5 ? 'text-emerald-400' : 'text-amber-400';
+  let ironStatus = testIron <= 0.3 ? 'Acceptable' : testIron <= 1.0 ? 'Elevated' : testIron <= 3.0 ? 'High' : 'Severe';
+  let ironColor = testIron <= 0.3 ? 'text-emerald-400' : testIron <= 1.0 ? 'text-amber-400' : 'text-rose-400';
+  let tdsStatus = testTds < 300 ? 'Low' : testTds <= 600 ? 'Moderate' : testTds <= 900 ? 'High' : 'Very High';
+  let tdsColor = testTds < 300 ? 'text-emerald-400' : testTds <= 600 ? 'text-amber-400' : 'text-rose-400';
+  let chlorineStatus = testChlorine < 0.2 ? 'Low' : testChlorine <= 4.0 ? 'Safe Range' : 'Elevated';
+  let chlorineColor = testChlorine < 0.2 ? 'text-amber-400' : testChlorine <= 4.0 ? 'text-emerald-400' : 'text-rose-400';
+
+  let overallScore = 0;
+  if (testHardness >= 1 && testHardness <= 10.5) overallScore++;
+  if (testPh >= 6.5 && testPh <= 8.5) overallScore++;
+  if (testIron <= 0.3) overallScore++;
+  if (testTds <= 600) overallScore++;
+  if (testChlorine >= 0.2 && testChlorine <= 4.0) overallScore++;
+  let overallLabel = overallScore >= 5 ? 'Excellent' : overallScore >= 4 ? 'Good' : overallScore >= 3 ? 'Fair' : 'Action Needed';
+  let overallColor = overallScore >= 5 ? 'text-emerald-400' : overallScore >= 4 ? 'text-blue-400' : overallScore >= 3 ? 'text-amber-400' : 'text-rose-400';
+
+  return { hardnessLevel, hardnessColor, phStatus, phColor, ironStatus, ironColor, tdsStatus, tdsColor, chlorineStatus, chlorineColor, overallScore, overallLabel, overallColor };
+}
+
+function waterTestResultsHtml(a) {
+  const rows = [
+    { label: 'Hardness', value: `${testHardness.toFixed(1)} GPG`, status: a.hardnessLevel, color: a.hardnessColor },
+    { label: 'pH Level', value: testPh.toFixed(1), status: a.phStatus, color: a.phColor },
+    { label: 'Iron', value: `${testIron.toFixed(1)} PPM`, status: a.ironStatus, color: a.ironColor },
+    { label: 'TDS', value: `${testTds.toFixed(0)} PPM`, status: a.tdsStatus, color: a.tdsColor },
+    { label: 'Free Chlorine', value: `${testChlorine.toFixed(1)} PPM`, status: a.chlorineStatus, color: a.chlorineColor }
+  ];
+  return `
+    <div class="bg-slate-800 border border-slate-700 rounded-2xl p-5 shadow-xl space-y-3 h-full">
+      <h3 class="text-sm font-bold text-sky-400 uppercase tracking-wider flex items-center gap-2"><i data-lucide="clipboard-check" class="w-4 h-4"></i> Live Results</h3>
+      <div class="bg-slate-900 rounded-xl border border-slate-700/60 p-3 flex justify-between items-center">
+        <span class="text-xs text-slate-400 font-semibold">Overall Water Quality</span>
+        <span class="text-sm font-black ${a.overallColor}">${a.overallLabel} (${a.overallScore}/5)</span>
+      </div>
+      <div class="space-y-2 text-xs">
+        ${rows.map(r => `
+          <div class="flex justify-between items-center bg-slate-900 rounded-lg px-3 py-2 border border-slate-700/40">
+            <span class="text-slate-400">${r.label}</span>
+            <span class="font-bold ${r.color}">${r.value} - ${r.status}</span>
+          </div>
+        `).join('')}
+      </div>
+      <div class="bg-slate-950 border border-amber-500/30 rounded-xl p-3 text-[11px] text-slate-400 space-y-1">
+        <p class="text-amber-400 font-bold uppercase tracking-wider">Field Notes</p>
+        <p>• pH below 6.5 is corrosive; above 8.5 can cause scaling.</p>
+        <p>• Iron above 0.3 PPM stains fixtures and fouls softener resin.</p>
+        <p>• TDS above 600 PPM may need reverse osmosis for taste.</p>
+      </div>
+    </div>
+  `;
+}
+
+function waterTestGraphHtml() {
+  const bars = [
+    { label: 'Hardness', value: testHardness, unit: 'GPG', max: 30, color: 'from-sky-500 to-blue-500' },
+    { label: 'pH Level', value: testPh, unit: 'pH', max: 14, color: 'from-emerald-500 to-teal-500' },
+    { label: 'Iron', value: testIron, unit: 'PPM', max: 5, color: 'from-amber-500 to-orange-500' },
+    { label: 'TDS', value: testTds, unit: 'PPM', max: 1000, color: 'from-violet-500 to-purple-500' },
+    { label: 'Free Chlorine', value: testChlorine, unit: 'PPM', max: 5, color: 'from-cyan-500 to-sky-500' }
+  ];
+  return bars.map(b => {
+    const pct = Math.min(100, Math.max(2, (b.value / b.max) * 100));
+    return `
+      <div class="space-y-1">
+        <div class="flex justify-between text-xs">
+          <span class="text-slate-400 font-semibold">${b.label}</span>
+          <span class="text-white font-bold">${b.value.toFixed(1)} ${b.unit}</span>
+        </div>
+        <div class="h-3 bg-slate-900 rounded-full overflow-hidden border border-slate-700">
+          <div class="h-full rounded-full bg-gradient-to-r ${b.color}" style="width: ${pct}%"></div>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+function updateWaterTestDisplay() {
+  const a = waterTestAssessment();
+  const resultsEl = document.getElementById('water-test-results');
+  if (resultsEl) resultsEl.innerHTML = waterTestResultsHtml(a);
+  const graphEl = document.getElementById('water-test-graph');
+  if (graphEl) graphEl.innerHTML = waterTestGraphHtml();
+  if (typeof lucide !== 'undefined') lucide.createIcons();
+}
+
+function resetWaterTest() {
+  testHardness = 22; testPh = 7.0; testIron = 1.2; testTds = 380; testChlorine = 0.5;
+  render();
+}
+
+function renderWaterTestModule() {
+  const a = waterTestAssessment();
+  return `
+    <div class="space-y-6 max-w-4xl mx-auto">
+      <div class="border-b border-slate-700 pb-4">
+        <h2 class="text-2xl font-black text-white flex items-center gap-2"><i data-lucide="droplets" class="w-7 h-7 text-sky-400"></i> Field Water Test Module</h2>
+        <p class="text-sm text-slate-400">Enter field kit readings for instant analysis, contamination risk assessment, and visual graphing.</p>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div class="bg-slate-800 border border-slate-700 rounded-2xl p-5 shadow-xl space-y-4">
+          <h3 class="text-sm font-bold text-sky-400 uppercase tracking-wider flex items-center gap-2"><i data-lucide="sliders-horizontal" class="w-4 h-4"></i> Test Parameters</h3>
+          <div>
+            <label class="block text-xs font-semibold text-slate-400 mb-1">Hardness (GPG)</label>
+            <input type="number" step="0.1" value="${testHardness}" oninput="testHardness=parseFloat(this.value)||0; updateWaterTestDisplay()" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-2.5 text-white text-sm focus:outline-none focus:border-sky-500">
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-slate-400 mb-1">pH Level</label>
+            <input type="number" step="0.1" value="${testPh}" oninput="testPh=parseFloat(this.value)||0; updateWaterTestDisplay()" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-2.5 text-white text-sm focus:outline-none focus:border-sky-500">
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-slate-400 mb-1">Iron (PPM)</label>
+            <input type="number" step="0.1" value="${testIron}" oninput="testIron=parseFloat(this.value)||0; updateWaterTestDisplay()" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-2.5 text-white text-sm focus:outline-none focus:border-sky-500">
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-slate-400 mb-1">TDS (PPM)</label>
+            <input type="number" step="1" value="${testTds}" oninput="testTds=parseFloat(this.value)||0; updateWaterTestDisplay()" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-2.5 text-white text-sm focus:outline-none focus:border-sky-500">
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-slate-400 mb-1">Free Chlorine (PPM)</label>
+            <input type="number" step="0.1" value="${testChlorine}" oninput="testChlorine=parseFloat(this.value)||0; updateWaterTestDisplay()" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-2.5 text-white text-sm focus:outline-none focus:border-sky-500">
+          </div>
+          <button onclick="resetWaterTest()" class="w-full bg-slate-700 hover:bg-slate-600 text-white py-2.5 rounded-xl text-xs font-bold shadow transition-all flex items-center justify-center gap-1.5">
+            <i data-lucide="rotate-ccw" class="w-4 h-4"></i> Reset to Default Field Kit Readings
+          </button>
+        </div>
+
+        <div id="water-test-results" class="h-full">
+          ${waterTestResultsHtml(a)}
+        </div>
+      </div>
+
+      <div class="bg-slate-800 border border-slate-700 rounded-2xl p-5 shadow-xl">
+        <h3 class="text-sm font-bold text-sky-400 uppercase tracking-wider mb-4 flex items-center gap-2"><i data-lucide="bar-chart-3" class="w-4 h-4"></i> Parameter Graph</h3>
+        <div id="water-test-graph" class="space-y-4">
+          ${waterTestGraphHtml()}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// ============================================================
+// SETTINGS MODULE (Company, Technician & Permissions)
+// ============================================================
+let settingsPrefs = {
+  gpsEnabled: true,
+  offlineStorage: true,
+  cameraPermission: true,
+  microphonePermission: false,
+  notifications: true,
+  autoBackup: false
+};
+let settingsSaved = false;
+let settingsStatusText = 'Changes are applied live to the dashboard header.';
+
+function settingsToggle(key, title, desc, icon, color) {
+  const checked = settingsPrefs[key] ? 'checked' : '';
+  return `
+    <div class="flex items-center justify-between gap-4 p-4 bg-slate-900 rounded-xl border border-slate-700/60">
+      <div class="flex items-start space-x-3">
+        <div class="w-10 h-10 rounded-lg bg-slate-800 border border-slate-700 flex items-center justify-center shrink-0">
+          <i data-lucide="${icon}" class="w-5 h-5 ${color}"></i>
+        </div>
+        <div>
+          <p class="text-sm font-bold text-white">${title}</p>
+          <p class="text-xs text-slate-400 mt-0.5">${desc}</p>
+        </div>
+      </div>
+      <label class="relative inline-flex items-center cursor-pointer shrink-0">
+        <input type="checkbox" class="sr-only peer" ${checked} onchange="settingsPrefs['${key}']=this.checked; updateSettingsPrefs('${key}')">
+        <div class="w-11 h-6 bg-slate-700 rounded-full peer peer-checked:bg-blue-600 after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border after:border-slate-300 after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:after:translate-x-full"></div>
+      </label>
+    </div>
+  `;
+}
+
+function updateSettingsPrefs(key) {
+  const labels = { gpsEnabled: 'GPS Location Tracking', offlineStorage: 'Offline Storage', cameraPermission: 'Camera Access', microphonePermission: 'Microphone Access', notifications: 'Push Notifications', autoBackup: 'Automatic Backup' };
+  settingsStatusText = `${labels[key] || key} ${settingsPrefs[key] ? 'enabled' : 'disabled'}.`;
+  const statusEl = document.getElementById('settings-status');
+  if (statusEl) statusEl.innerText = settingsStatusText;
+}
+
+function updateSettingsStatus() {
+  settingsSaved = false;
+  settingsStatusText = 'Unsaved changes - click Save Settings to confirm.';
+  const statusEl = document.getElementById('settings-status');
+  if (statusEl) statusEl.innerText = settingsStatusText;
+}
+
+function saveSettings() {
+  settingsSaved = true;
+  settingsStatusText = 'Settings saved successfully.';
+  const statusEl = document.getElementById('settings-status');
+  if (statusEl) statusEl.innerText = settingsStatusText;
+}
+
+function renderSettings() {
+  return `
+    <div class="space-y-6 max-w-3xl mx-auto">
+      <div class="border-b border-slate-700 pb-4">
+        <h2 class="text-2xl font-black text-white flex items-center gap-2"><i data-lucide="settings" class="w-7 h-7 text-slate-400"></i> App Settings</h2>
+        <p class="text-sm text-slate-400">Company profile, technician identity, and device permissions.</p>
+      </div>
+
+      <div class="bg-slate-800 border border-slate-700 rounded-2xl p-6 shadow-xl space-y-4">
+        <h3 class="text-sm font-bold text-blue-400 uppercase tracking-wider">Company & Technician</h3>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label class="block text-xs font-semibold text-slate-400 mb-1">Company Name</label>
+            <input type="text" value="${appSettings.companyName}" oninput="appSettings.companyName=this.value; updateSettingsStatus()" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-2.5 text-white text-sm focus:outline-none focus:border-blue-500">
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-slate-400 mb-1">Technician Name</label>
+            <input type="text" value="${appSettings.technicianName}" oninput="appSettings.technicianName=this.value; updateSettingsStatus()" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-2.5 text-white text-sm focus:outline-none focus:border-blue-500">
+          </div>
+        </div>
+        <div class="flex items-center justify-between flex-wrap gap-2 pt-1">
+          <p id="settings-status" class="text-xs ${settingsSaved ? 'text-emerald-400' : 'text-slate-400'}">${settingsStatusText}</p>
+          <button onclick="saveSettings()" class="bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-xl text-xs font-bold shadow flex items-center gap-1.5 transition-all">
+            <i data-lucide="save" class="w-4 h-4"></i> Save Settings
+          </button>
+        </div>
+      </div>
+
+      <div class="bg-slate-800 border border-slate-700 rounded-2xl p-6 shadow-xl space-y-3">
+        <h3 class="text-sm font-bold text-cyan-400 uppercase tracking-wider">Storage, GPS & Permissions</h3>
+        ${settingsToggle('gpsEnabled', 'GPS Location Tracking', 'Automatically capture service location for job records and reports.', 'map-pin', 'text-cyan-400')}
+        ${settingsToggle('offlineStorage', 'Offline Storage', 'Cache customer data and reports for offline field use.', 'database', 'text-emerald-400')}
+        ${settingsToggle('cameraPermission', 'Camera Access', 'Allow photo capture for job records and signatures.', 'camera', 'text-amber-400')}
+        ${settingsToggle('microphonePermission', 'Microphone Access', 'Allow voice notes for field documentation.', 'mic', 'text-rose-400')}
+        ${settingsToggle('notifications', 'Push Notifications', 'Receive reminders for scheduled service visits.', 'bell', 'text-indigo-400')}
+        ${settingsToggle('autoBackup', 'Automatic Backup', 'Sync settings and reports to cloud backup.', 'cloud', 'text-teal-400')}
+      </div>
+
+      <div class="bg-slate-900 border border-slate-700 rounded-2xl p-5 text-xs text-slate-400 space-y-1.5">
+        <p class="font-bold text-slate-300 uppercase tracking-wider">Storage Usage</p>
+        <p>• Customer Records: <b class="text-white">${customersList.length}</b> profiles</p>
+        <p>• Job Records: <b class="text-white">${jobRecords.length}</b> jobs</p>
+        <p>• Exported Report Sections: <b class="text-white">${Object.values(customerReports).reduce((n, r) => n + Object.keys(r.sections || {}).length, 0)}</b> entries</p>
+        <p>• Estimated Local Data: <b class="text-white">${(customersList.length * 1.2 + jobRecords.length * 2.5 + 4).toFixed(1)} KB</b></p>
+      </div>
+    </div>
+  `;
 }
 
 render();
