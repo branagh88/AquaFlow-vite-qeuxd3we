@@ -48,6 +48,9 @@
     </button>
   </nav>
 
+  <!-- AICore Service: classic script loaded BEFORE the app script so
+       window.AquaFlowAICore is available to getAiReply() in script.js -->
+  <script src="/src/aicore-service.js"></script>
   <script src="/src/script.js"></script>
 </body>
 </html>

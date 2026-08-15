@@ -362,7 +362,7 @@ const AI_STORAGE_KEYS = {
 
 function defaultAiChatHistory() {
   return [
-    { role: 'model', parts: [{ text: "Hello Master Technician! I am your AquaFlow Hybrid AI Expert. Ask me about 1/2HP to 1HP multi-manufacturer pump curves, Hazen-Williams friction tables, or Amtrol Well-X-Trol tank sizing. When a data connection is active I attempt to sync with an on-device AI model for richer diagnostics, and I always fall back to the offline field knowledge base." }] }
+    { role: 'model', parts: [{ text: "Hello Master Technician! I am your AquaFlow Hybrid AI Expert. Ask me about 1/2HP to 1HP multi-manufacturer pump curves, Hazen-Williams friction tables, or Amtrol Well-X-Trol tank sizing. Every reply is enriched by AICore Deep Diagnostics (symptom, probable causes, verification checks, manufacturer guidance for Grundfos CUE 100 / Pentek / Clack). When a data connection is active I attempt to sync with an on-device AI model for richer diagnostics, and I always fall back to the offline field knowledge base." }] }
   ];
 }
 
@@ -1536,13 +1536,26 @@ async function runLocalAiDiagnosis(query) {
 
 async function getAiReply(query) {
   const kbReply = processNaturalLanguageQuery(query);
-  if (!getAiConnectivity()) return kbReply; // Offline: knowledge base only (unchanged path).
+  let reply = kbReply;
+  // AICore deep diagnostics enrichment (window.AquaFlowAICore is loaded
+  // from index.html BEFORE this script). It is fully offline-capable;
+  // when the service is unavailable we gracefully fall back to the plain
+  // offline knowledge base reply.
+  if (typeof AquaFlowAICore !== 'undefined' && AquaFlowAICore && typeof AquaFlowAICore.enrichDiagnostics === 'function') {
+    try {
+      const enriched = AquaFlowAICore.enrichDiagnostics(query, kbReply);
+      if (enriched) reply = kbReply + enriched;
+    } catch (e) {
+      // AICore enrichment failed; keep the offline knowledge base reply.
+    }
+  }
+  if (!getAiConnectivity()) return reply; // Offline: knowledge base + AICore only.
   if (aiModelStatus === 'idle') maybeLoadLocalAi();
   if (aiModelStatus === 'ready') {
     const modelNote = await runLocalAiDiagnosis(query);
-    if (modelNote) return kbReply + modelNote;
+    if (modelNote) return reply + modelNote;
   }
-  return kbReply; // Graceful fallback to the offline knowledge base.
+  return reply; // Graceful fallback to the offline knowledge base.
 }
 
 // --- Status indicator ------------------------------------------------------
@@ -1550,6 +1563,10 @@ function aiStatusIndicatorHtml() {
   const online = getAiConnectivity();
   const pendingCount = aiPendingSync.length;
   let modelBadge = '';
+  let aicoreBadge = '';
+  if (typeof AquaFlowAICore !== 'undefined' && AquaFlowAICore) {
+    aicoreBadge = '<span class="bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 px-2 py-0.5 rounded-full text-[10px] font-bold">AICORE</span>';
+  }
   if (online) {
     if (aiModelStatus === 'ready') {
       modelBadge = '<span class="bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-2 py-0.5 rounded-full text-[10px] font-bold">LOCAL AI READY</span>';
@@ -1565,6 +1582,7 @@ function aiStatusIndicatorHtml() {
       (online ? 'Online' : 'Offline') +
     '</span>' +
     modelBadge +
+    aicoreBadge +
     (pendingCount > 0 ? '<span class="bg-blue-500/20 text-blue-300 border border-blue-500/30 px-2 py-0.5 rounded-full text-[10px] font-bold">' + pendingCount + ' PENDING SYNC</span>' : '') +
   '</div>';
 }
@@ -1722,7 +1740,7 @@ function renderAI() {
           <h2 class="text-2xl font-black text-white flex items-center gap-2">
             <i data-lucide="bot" class="w-7 h-7 text-teal-400"></i> AquaFlow AI Expert
           </h2>
-          <p class="text-sm text-slate-400">Field knowledge base for Grundfos, Pentek, and Clack valves. When online, an on-device AI model enriches diagnostics with automatic fallback.</p>
+          <p class="text-sm text-slate-400">Field knowledge base for Grundfos, Pentek, and Clack valves with AICore deep diagnostics (symptom, probable causes, verification checks). When online, an on-device AI model adds further enrichment with automatic fallback.</p>
         </div>
         ${aiStatusIndicatorHtml()}
       </div>
