@@ -161,7 +161,7 @@ def typecheck(run) -> QualityCheckResult:
         name="typecheck",
         area="backend",
         operation="typecheck",
-        argv=["bun", "x", "tsc", "--noEmit"],   # e.g. ["bun", "x", "tsc", "--noEmit"]
+        argv=_placeholder("typecheck"),   # e.g. ["bun", "x", "tsc", "--noEmit"]
     ), run)
 
 
@@ -171,7 +171,7 @@ def build(run) -> QualityCheckResult:
         name="build",
         area="backend",
         operation="build",
-        argv=["bun", "x", "vite", "build"],       # e.g. ["bun", "build", "src/index.ts", "--outdir", str(output_dir)]
+        argv=_placeholder("build"),       # e.g. ["bun", "build", "src/index.ts", "--outdir", str(output_dir)]
     ), run)
 
 
