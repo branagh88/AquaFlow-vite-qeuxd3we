@@ -40,12 +40,25 @@ def repo_root() -> Path:
     return Path.cwd().resolve()
 
 
+def _ensure_user_config() -> None:
+    """git refuses to commit without user.name/email, and GDD-tab-created
+    projects have neither (their scaffold only runs `git init`). Set per-repo
+    fallbacks so the commit phase cannot die on the very first commit."""
+    for key, fallback in (("user.name", "PRS Factory"),
+                          ("user.email", "factory@mesh-viewer.local")):
+        who = subprocess.run(["git", "config", "--local", key],
+                             capture_output=True, text=True)
+        if not who.stdout.strip():
+            _git("config", "--local", key, fallback)
+
+
 def commit_all(message: str) -> str:
     """Stage the working tree and commit it. Returns the new short sha."""
     if not is_repo():
         raise RuntimeError(
             "not a git repository — a commit phase needs one. Run `git init` in the "
             "repo root (and make a first commit) before running an ADW that commits.")
+    _ensure_user_config()
     _git("add", "-A")
     if not _git("status", "--porcelain"):
         raise RuntimeError("nothing to commit — the preceding phases changed no files")
@@ -85,11 +98,25 @@ def ref_exists(ref: str) -> bool:
 
 
 def rev(ref: str = "HEAD") -> str:
-    return _git("rev-parse", ref)
+    result = subprocess.run(["git", "rev-parse", ref], capture_output=True, text=True)
+    if result.returncode != 0:
+        # A fresh repo with no commits has an UNBORN HEAD (seen: GDD-tab
+        # projects — `git init` but no initial commit). Callers treat "" as
+        # "no baseline yet" instead of the run crashing on rev-parse.
+        if "unknown revision" in result.stderr:
+            return ""
+        raise RuntimeError(f"git rev-parse {ref} failed: {result.stderr.strip()}")
+    return result.stdout.strip()
 
 
 def short_sha(ref: str = "HEAD") -> str:
-    return _git("rev-parse", "--short", ref)
+    result = subprocess.run(["git", "rev-parse", "--short", ref or "HEAD"],
+                            capture_output=True, text=True)
+    if result.returncode != 0:
+        if "unknown revision" in result.stderr:
+            return ""     # unborn HEAD or unresolvable ref — no sha yet
+        raise RuntimeError(f"git rev-parse --short {ref} failed: {result.stderr.strip()}")
+    return result.stdout.strip()
 
 
 def merge_base(ref: str, other: str = "HEAD") -> str:
@@ -98,8 +125,15 @@ def merge_base(ref: str, other: str = "HEAD") -> str:
     On the base branch itself this returns HEAD, which makes the diff exactly
     "what is not committed yet". Off it, the diff is the whole branch plus the
     working tree. One command covers both cases, so no ADW has to branch on it.
+    Returns "" when either side is an unborn HEAD (nothing to merge against).
     """
-    return _git("merge-base", ref, other)
+    result = subprocess.run(["git", "merge-base", ref, other],
+                            capture_output=True, text=True)
+    if result.returncode != 0:
+        if "unknown revision" in result.stderr or "not a valid" in result.stderr:
+            return ""
+        raise RuntimeError(f"git merge-base {ref} {other} failed: {result.stderr.strip()}")
+    return result.stdout.strip()
 
 
 def is_dirty() -> bool:
