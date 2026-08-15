@@ -1,0 +1,6 @@
+{
+  "appId": "com.petrockstudios.aquaflow",
+  "appName": "AquaFlow",
+  "webDir": "www",
+  "server": { "androidScheme": "https" }
+}
