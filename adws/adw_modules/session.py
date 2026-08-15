@@ -50,6 +50,13 @@ def ensure(cfg: SSSFConfig, adw_id: str | None = None) -> Run:
         _active = _conn.execute(
             "SELECT adw_id FROM sessions WHERE status='running' AND adw_id != ?",
             (adw_id,)).fetchall()
+        # SAME-id double-run guard: a resume must never stack on a LIVE
+        # process already driving this adw_id (seen: an auto-resume + a manual
+        # resume racing, two managers on one repo). Probe each open process
+        # row; a live pid means another driver is already here — refuse.
+        _procs = _conn.execute(
+            "SELECT pid FROM processes WHERE adw_id=? AND ended_at IS NULL AND pid > 0",
+            (adw_id,)).fetchall()
         _conn.close()
         if _active:
             other = ", ".join(r[0] for r in _active[:3])
@@ -57,6 +64,15 @@ def ensure(cfg: SSSFConfig, adw_id: str | None = None) -> Run:
                 f"ANOTHER FACTORY RUN IS ACTIVE on this project ({other}). "
                 f"Concurrent runs on one repo corrupt the working tree and "
                 f"deadlock each other. Wait for it to finish, or stop it first.")
+        for (pid,) in _procs:
+            try:
+                os.kill(int(pid), 0)          # signal 0 probes existence
+            except (OSError, ValueError):
+                continue                      # dead/zombie — no longer driving
+            raise RuntimeError(
+                f"run {adw_id} is ALREADY LIVE (pid {pid}). A second process "
+                f"driving the same session would double-run the repo. Stop it "
+                f"first (Factory tab → stop, or kill {pid}) and retry.")
     except _sqlite3.Error:
         pass   # db busy/new — proceed; the race window is tiny and harmless
     # ── branch isolation: this run works on its OWN branch (factory/<adw_id>),
