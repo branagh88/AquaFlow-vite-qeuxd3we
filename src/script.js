@@ -269,15 +269,15 @@ function solveOperatingPoint(targetPsiHead, verticalLift, totalPipeLen, pumpObj)
 // AUTHORITATIVE AMTROL WELL-X-TROL DATABASE & PUBLISHED DRAWDOWN
 // ============================================================
 const amtrolTankDatabase = {
-  "WX-202": { model: "WX-202", totalVolume: 20, drawdowns: { "20/40": 4.9, "30/50": 6.2, "40/60": 5.4, "50/70": 4.7 } },
-  "WX-202XL": { model: "WX-202XL", totalVolume: 26, drawdowns: { "20/40": 6.3, "30/50": 8.0, "40/60": 7.0, "50/70": 6.1 } },
-  "WX-203": { model: "WX-203", totalVolume: 32, drawdowns: { "20/40": 7.8, "30/50": 9.9, "40/60": 8.6, "50/70": 7.6 } },
-  "WX-205": { model: "WX-205", totalVolume: 34, drawdowns: { "20/40": 8.3, "30/50": 10.5, "40/60": 9.1, "50/70": 8.0 } },
-  "WX-250": { model: "WX-250", totalVolume: 44, drawdowns: { "20/40": 10.7, "30/50": 13.6, "40/60": 11.8, "50/70": 10.4 } },
-  "WX-251": { model: "WX-251", totalVolume: 62, drawdowns: { "20/40": 15.1, "30/50": 19.2, "40/60": 16.6, "50/70": 14.6 } },
-  "WX-255": { model: "WX-255", totalVolume: 81, drawdowns: { "20/40": 19.7, "30/50": 25.0, "40/60": 21.7, "50/70": 19.1 } },
-  "WX-302": { model: "WX-302", totalVolume: 86, drawdowns: { "20/40": 21.0, "30/50": 26.6, "40/60": 23.0, "50/70": 20.3 } },
-  "WX-350": { model: "WX-350", totalVolume: 119, drawdowns: { "20/40": 29.0, "30/50": 36.8, "40/60": 31.9, "50/70": 28.1 } }
+  "WX-202": { model: "WX-202", totalVolume: 20, drawdowns: { "20/40": 7.3, "30/50": 6.2, "40/60": 5.4, "50/70": 4.7 } },
+  "WX-202XL": { model: "WX-202XL", totalVolume: 26, drawdowns: { "20/40": 9.5, "30/50": 8.0, "40/60": 7.0, "50/70": 6.1 } },
+  "WX-203": { model: "WX-203", totalVolume: 32, drawdowns: { "20/40": 11.7, "30/50": 9.9, "40/60": 8.6, "50/70": 7.6 } },
+  "WX-205": { model: "WX-205", totalVolume: 34, drawdowns: { "20/40": 12.4, "30/50": 10.5, "40/60": 9.1, "50/70": 8.0 } },
+  "WX-250": { model: "WX-250", totalVolume: 44, drawdowns: { "20/40": 16.1, "30/50": 13.6, "40/60": 11.8, "50/70": 10.4 } },
+  "WX-251": { model: "WX-251", totalVolume: 62, drawdowns: { "20/40": 22.7, "30/50": 19.2, "40/60": 16.6, "50/70": 14.6 } },
+  "WX-255": { model: "WX-255", totalVolume: 81, drawdowns: { "20/40": 29.6, "30/50": 25.0, "40/60": 21.7, "50/70": 19.1 } },
+  "WX-302": { model: "WX-302", totalVolume: 86, drawdowns: { "20/40": 31.4, "30/50": 26.6, "40/60": 23.0, "50/70": 20.3 } },
+  "WX-350": { model: "WX-350", totalVolume: 119, drawdowns: { "20/40": 43.5, "30/50": 36.8, "40/60": 31.9, "50/70": 28.1 } }
 };
 
 let tankState = {
@@ -302,6 +302,18 @@ function getCutInAndOut(switchStr) {
   return { cutIn: parseInt(parts[0]), cutOut: parseInt(parts[1]) };
 }
 
+// Boyle's-law drawdown using the SAME absolute-pressure convention as the
+// manufacturer-published values: gauge pressures are converted to absolute by
+// adding 14.7 psia (atmospheric). V = Vt * p0_abs * (1/pIn_abs - 1/pOut_abs)
+const ATMOSPHERIC_PRESSURE_PSIA = 14.7;
+function calculateBoyleDrawdown(totalVol, precharge, cutIn, cutOut) {
+  let p0Abs = precharge + ATMOSPHERIC_PRESSURE_PSIA;
+  let pInAbs = cutIn + ATMOSPHERIC_PRESSURE_PSIA;
+  let pOutAbs = cutOut + ATMOSPHERIC_PRESSURE_PSIA;
+  if (p0Abs <= 0 || pInAbs <= 0 || pOutAbs <= 0) return 0;
+  return totalVol * p0Abs * ((1 / pInAbs) - (1 / pOutAbs));
+}
+
 function calculateTankStateResults() {
   let { cutIn, cutOut } = getCutInAndOut(tankState.switchSetting);
   let defaultPrecharge = cutIn - 2;
@@ -317,18 +329,14 @@ function calculateTankStateResults() {
       drawdown = tankEntry.drawdowns[tankState.switchSetting];
       dataSource = "Manufacturer Published Drawdown";
     } else {
-      let p0Abs = precharge + 14.7;
-      let pInAbs = cutIn + 14.7;
-      let pOutAbs = cutOut + 14.7;
-      drawdown = totalVol * p0Abs * ((1 / pInAbs) - (1 / pOutAbs));
-      dataSource = tankState.customPrechargeEnabled ? "Calculated from Custom Precharge" : "Calculated Estimate (Boyle's Law)";
+      drawdown = calculateBoyleDrawdown(totalVol, precharge, cutIn, cutOut);
+      dataSource = tankState.customPrechargeEnabled
+        ? "Calculated via Boyle's Law (Custom Precharge, Absolute PSIA)"
+        : "Calculated via Boyle's Law (Absolute PSIA)";
     }
   } else {
-    let p0Abs = precharge + 14.7;
-    let pInAbs = cutIn + 14.7;
-    let pOutAbs = cutOut + 14.7;
-    drawdown = totalVol * p0Abs * ((1 / pInAbs) - (1 / pOutAbs));
-    dataSource = "Calculated Estimate (Manual Tank)";
+    drawdown = calculateBoyleDrawdown(totalVol, precharge, cutIn, cutOut);
+    dataSource = "Calculated via Boyle's Law (Manual Tank, Absolute PSIA)";
   }
 
   let percentage = totalVol > 0 ? (drawdown / totalVol) * 100 : 0;
@@ -347,9 +355,35 @@ function calculateTankStateResults() {
   };
 }
 
-let aiChatHistory = [
-  { role: 'model', parts: [{ text: "Hello Master Technician! I am your AquaFlow Hybrid AI Expert. Ask me about 1/2HP to 1HP multi-manufacturer pump curves, Hazen-Williams friction tables, or Amtrol Well-X-Trol tank sizing." }] }
-];
+const AI_STORAGE_KEYS = {
+  chat: 'aquaflow_ai_chat_history_v1',
+  pending: 'aquaflow_ai_pending_sync_v1'
+};
+
+function defaultAiChatHistory() {
+  return [
+    { role: 'model', parts: [{ text: "Hello Master Technician! I am your AquaFlow Hybrid AI Expert. Ask me about 1/2HP to 1HP multi-manufacturer pump curves, Hazen-Williams friction tables, or Amtrol Well-X-Trol tank sizing. When a data connection is active I attempt to sync with an on-device AI model for richer diagnostics, and I always fall back to the offline field knowledge base." }] }
+  ];
+}
+
+function loadAiChatHistory() {
+  try {
+    const raw = localStorage.getItem(AI_STORAGE_KEYS.chat);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+    }
+  } catch (e) { /* storage unavailable; use defaults */ }
+  return defaultAiChatHistory();
+}
+
+function persistAiChatHistory() {
+  try {
+    localStorage.setItem(AI_STORAGE_KEYS.chat, JSON.stringify(aiChatHistory));
+  } catch (e) { /* storage unavailable; history kept in memory only */ }
+}
+
+let aiChatHistory = loadAiChatHistory();
 
 function switchTab(tab) {
   currentTab = tab;
@@ -388,6 +422,10 @@ function render() {
   
   if (currentTab === 'calculators') {
     renderCalculatorSubTab();
+  }
+
+  if (currentTab === 'ai') {
+    maybeLoadLocalAi();
   }
 
   if (typeof lucide !== 'undefined') {
@@ -1338,9 +1376,203 @@ function renderMasterReport() {
 
 
 // ============================================================
-// AI DIAGNOSTICS MODULE (Offline Knowledge Base - Vanilla JS port)
+// AI DIAGNOSTICS MODULE (Offline Knowledge Base + Local-AI Sync)
+// Vanilla JS port. The offline keyword knowledge base
+// (processNaturalLanguageQuery) is ALWAYS the fallback; when a
+// data connection is active the module attempts to load
+// Transformers.js on demand for richer on-device diagnostics.
 // ============================================================
 let aiInput = '';
+
+// --- Connectivity state ---------------------------------------------------
+let aiConnectivity = { online: typeof navigator !== 'undefined' ? navigator.onLine : true };
+let aiModelStatus = 'idle'; // idle | loading | ready | unavailable
+let aiSyncEndpoint = '';
+try {
+  const cfg = (typeof window !== 'undefined' && window.AQUAFLOW_CONFIG) || {};
+  aiSyncEndpoint = cfg.aiSyncEndpoint || localStorage.getItem('aquaflow_ai_sync_endpoint') || '';
+} catch (e) {
+  aiSyncEndpoint = '';
+}
+
+let aiPendingSync = (function loadAiPendingSync() {
+  try {
+    const raw = localStorage.getItem(AI_STORAGE_KEYS.pending);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed;
+    }
+  } catch (e) { /* ignore */ }
+  return [];
+})();
+
+function getAiConnectivity() {
+  return typeof navigator !== 'undefined' ? navigator.onLine : true;
+}
+
+function persistAiPendingSync() {
+  try {
+    localStorage.setItem(AI_STORAGE_KEYS.pending, JSON.stringify(aiPendingSync));
+  } catch (e) { /* ignore */ }
+}
+
+function queueChatSync(entry) {
+  aiPendingSync.push(Object.assign({ ts: new Date().toISOString() }, entry));
+  persistAiPendingSync();
+  updateAiStatusIndicator();
+  if (getAiConnectivity()) flushAiPendingSync();
+}
+
+async function flushAiPendingSync() {
+  if (!getAiConnectivity() || aiPendingSync.length === 0) return;
+  if (aiSyncEndpoint) {
+    try {
+      const payload = {
+        entries: aiPendingSync.slice(),
+        device: 'aquaflow-field-app',
+        syncedAt: new Date().toISOString()
+      };
+      const resp = await fetch(aiSyncEndpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      if (resp.ok) {
+        aiPendingSync = [];
+        persistAiPendingSync();
+      }
+    } catch (e) {
+      // Keep the queue; the next online event retries the sync.
+    }
+  } else {
+    // No endpoint configured: sync is local-only (history is already persisted).
+    aiPendingSync = [];
+    persistAiPendingSync();
+  }
+  updateAiStatusIndicator();
+}
+
+function initAiConnectivity() {
+  if (typeof window === 'undefined') return;
+  aiConnectivity.online = getAiConnectivity();
+  window.addEventListener('online', () => {
+    aiConnectivity.online = true;
+    updateAiStatusIndicator();
+    flushAiPendingSync();
+    maybeLoadLocalAi();
+  });
+  window.addEventListener('offline', () => {
+    aiConnectivity.online = false;
+    updateAiStatusIndicator();
+  });
+}
+
+// --- On-device / remote AI path (Transformers.js from CDN) ----------------
+function loadLocalAiModel() {
+  if (aiModelStatus === 'loading' || aiModelStatus === 'ready') return;
+  if (!getAiConnectivity()) {
+    aiModelStatus = 'unavailable';
+    updateAiStatusIndicator();
+    return;
+  }
+  aiModelStatus = 'loading';
+  updateAiStatusIndicator();
+
+  const script = document.createElement('script');
+  script.src = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@2.17.2/dist/transformers.min.js';
+  script.async = true;
+  script.crossOrigin = 'anonymous';
+  script.onload = async () => {
+    try {
+      const tf = window.transformers;
+      if (!tf || !tf.pipeline) throw new Error('Transformers.js pipeline unavailable');
+      if (tf.env) tf.env.allowLocalModels = false;
+      window.__aquaflowAiPipeline = await tf.pipeline('text2text-generation', 'Xenova/LaMini-Flan-T5-77M');
+      aiModelStatus = 'ready';
+    } catch (err) {
+      aiModelStatus = 'unavailable';
+    }
+    updateAiStatusIndicator();
+  };
+  script.onerror = () => {
+    aiModelStatus = 'unavailable';
+    updateAiStatusIndicator();
+  };
+  // Safety timeout so the UI never stays in "loading" forever.
+  setTimeout(() => {
+    if (aiModelStatus === 'loading') {
+      aiModelStatus = 'unavailable';
+      updateAiStatusIndicator();
+    }
+  }, 60000);
+
+  document.head.appendChild(script);
+}
+
+function maybeLoadLocalAi() {
+  if (aiModelStatus === 'idle' && getAiConnectivity()) loadLocalAiModel();
+}
+
+async function runLocalAiDiagnosis(query) {
+  if (aiModelStatus !== 'ready' || !window.__aquaflowAiPipeline) return '';
+  try {
+    const prompt = 'You are a water well pump field technician. Give concise, safe troubleshooting advice for: ' + query;
+    const output = await window.__aquaflowAiPipeline(prompt, { max_new_tokens: 80 });
+    let text = '';
+    if (Array.isArray(output) && output.length) {
+      text = output[0] && (output[0].generated_text || output[0].summary_text || '');
+    } else if (output && output.generated_text) {
+      text = output.generated_text;
+    }
+    text = String(text || '').trim();
+    if (!text) return '';
+    return '<br><br><div class="bg-gradient-to-r from-teal-900/40 to-blue-900/40 border border-teal-500/30 rounded-xl p-3 text-xs text-teal-100"><b>On-Device AI Diagnostic Note (local model):</b> ' + escapeHtml(text) + '</div>';
+  } catch (e) {
+    aiModelStatus = 'unavailable';
+    updateAiStatusIndicator();
+    return '';
+  }
+}
+
+async function getAiReply(query) {
+  const kbReply = processNaturalLanguageQuery(query);
+  if (!getAiConnectivity()) return kbReply; // Offline: knowledge base only (unchanged path).
+  if (aiModelStatus === 'idle') maybeLoadLocalAi();
+  if (aiModelStatus === 'ready') {
+    const modelNote = await runLocalAiDiagnosis(query);
+    if (modelNote) return kbReply + modelNote;
+  }
+  return kbReply; // Graceful fallback to the offline knowledge base.
+}
+
+// --- Status indicator ------------------------------------------------------
+function aiStatusIndicatorHtml() {
+  const online = getAiConnectivity();
+  const pendingCount = aiPendingSync.length;
+  let modelBadge = '';
+  if (online) {
+    if (aiModelStatus === 'ready') {
+      modelBadge = '<span class="bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-2 py-0.5 rounded-full text-[10px] font-bold">LOCAL AI READY</span>';
+    } else if (aiModelStatus === 'loading') {
+      modelBadge = '<span class="bg-amber-500/20 text-amber-300 border border-amber-500/30 px-2 py-0.5 rounded-full text-[10px] font-bold">LOADING LOCAL AI</span>';
+    } else {
+      modelBadge = '<span class="bg-slate-500/20 text-slate-300 border border-slate-500/30 px-2 py-0.5 rounded-full text-[10px] font-bold">KNOWLEDGE BASE</span>';
+    }
+  }
+  return '<div id="ai-status-indicator" class="flex items-center gap-2 flex-wrap">' +
+    '<span class="inline-flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider px-2.5 py-1 rounded-full border ' + (online ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40' : 'bg-rose-500/15 text-rose-300 border-rose-500/40') + '">' +
+      '<span class="w-2 h-2 rounded-full ' + (online ? 'bg-emerald-400' : 'bg-rose-400') + ' animate-pulse"></span>' +
+      (online ? 'Online' : 'Offline') +
+    '</span>' +
+    modelBadge +
+    (pendingCount > 0 ? '<span class="bg-blue-500/20 text-blue-300 border border-blue-500/30 px-2 py-0.5 rounded-full text-[10px] font-bold">' + pendingCount + ' PENDING SYNC</span>' : '') +
+  '</div>';
+}
+
+function updateAiStatusIndicator() {
+  const el = document.getElementById('ai-status-indicator');
+  if (el) el.outerHTML = aiStatusIndicatorHtml();
+}
 
 const expertKnowledgeBase = {
   grundfos: {
@@ -1470,24 +1702,29 @@ function handleSendAi() {
   aiInput = '';
   if (input) input.value = '';
   aiChatHistory.push({ role: 'user', parts: [{ text: query }] });
+  persistAiChatHistory();
   renderChatList();
   setTimeout(() => {
-    const reply = processNaturalLanguageQuery(query);
-    aiChatHistory.push({ role: 'model', parts: [{ text: reply }] });
-    renderChatList();
+    getAiReply(query).then(reply => {
+      aiChatHistory.push({ role: 'model', parts: [{ text: reply }] });
+      persistAiChatHistory();
+      queueChatSync({ role: 'model', text: reply, query: query });
+      renderChatList();
+    });
   }, 300);
 }
 
 function renderAI() {
   return `
     <div class="space-y-4 max-w-4xl mx-auto flex flex-col" style="height: calc(100vh - 230px); min-height: 480px;">
-      <div class="border-b border-slate-700 pb-3 flex items-center justify-between">
+      <div class="border-b border-slate-700 pb-3 flex items-center justify-between flex-wrap gap-3">
         <div>
           <h2 class="text-2xl font-black text-white flex items-center gap-2">
             <i data-lucide="bot" class="w-7 h-7 text-teal-400"></i> AquaFlow AI Expert
           </h2>
-          <p class="text-sm text-slate-400">Offline Knowledge Base for Grundfos, Pentek, and Clack valves.</p>
+          <p class="text-sm text-slate-400">Field knowledge base for Grundfos, Pentek, and Clack valves. When online, an on-device AI model enriches diagnostics with automatic fallback.</p>
         </div>
+        ${aiStatusIndicatorHtml()}
       </div>
 
       <div id="ai-chat-list" class="flex-1 bg-slate-800 border border-slate-700 rounded-2xl p-4 overflow-y-auto space-y-4 shadow-xl" style="min-height: 300px;">
@@ -1507,6 +1744,7 @@ function renderAI() {
           <i data-lucide="send" class="w-4 h-4"></i>
         </button>
       </div>
+      <p class="text-[10px] text-slate-500 text-center">Chat history is saved on this device. When connectivity returns, pending messages sync to the configured endpoint (AQUAFLOW_CONFIG.aiSyncEndpoint or localStorage key aquaflow_ai_sync_endpoint) or stay local-only.</p>
     </div>
   `;
 }
@@ -1766,4 +2004,5 @@ function renderSettings() {
   `;
 }
 
+initAiConnectivity();
 render();
