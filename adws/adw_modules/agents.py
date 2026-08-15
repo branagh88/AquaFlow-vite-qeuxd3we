@@ -197,7 +197,9 @@ def execute(run, phase: Phase, call: AgentCall) -> EnvelopeBase:
     latest: agent_pi.PiResult | None = None
     spent = UsageBreakdown()
 
-    def send(prompt_text: str) -> agent_pi.PiResult:
+    def send(prompt_text: str,
+             max_tool_calls: int | None = None,
+             max_identical: int | None = None) -> agent_pi.PiResult:
         nonlocal latest
         request = PiRequest(
             prompt=prompt_text,
@@ -211,6 +213,16 @@ def execute(run, phase: Phase, call: AgentCall) -> EnvelopeBase:
             tools=_agent_tools(agent),
             extensions=agent.harness_engineering,
             cwd=str(run.repo_root),
+            # Phase guardrails: identical-call loop guard, tool budget, and
+            # the phase deadline all live in agent_pi.run (it owns the child
+            # process). Defaults come from the phase; a corrective retry can
+            # tighten them (see the abort path below).
+            max_tool_calls=(max_tool_calls if max_tool_calls is not None
+                            else phase.params.max_tool_calls),
+            max_identical_tool_calls=(max_identical if max_identical is not None
+                                      else phase.params.max_identical_tool_calls),
+            deadline_at=(time.time() + phase.params.timeout_sec)
+            if phase.params.timeout_sec > 0 else None,
         )
         result = agent_pi.run(
             request,
@@ -230,6 +242,31 @@ def execute(run, phase: Phase, call: AgentCall) -> EnvelopeBase:
     tree_before = permissions.snapshot(run)
 
     result = send(user_text)
+    if result.aborted_reason:
+        # A guardrail fired before the agent produced a final message: it
+        # looped on identical tool calls, blew its tool budget, or ran past
+        # the phase deadline. One corrective retry in the SAME session with a
+        # hard "stop using tools" instruction and a tight budget; a second
+        # abort fails the phase instead of looping again.
+        run.tracer.event(EventRecord(
+            adw_id=run.adw_id, phase_id=phase.phase_id, type="log",
+            name="guardrail", payload={"agent": agent.name,
+                                       "reason": result.aborted_reason,
+                                       "detail": result.aborted_detail}))
+        run.console.note(f"{agent.name}: {result.aborted_reason} "
+                         f"({result.aborted_detail}) — corrective retry")
+        correction = (
+            f"You were stopped during your previous attempt: "
+            f"{result.aborted_detail} (reason: {result.aborted_reason}). "
+            f"You must NOT call any tools and must NOT write any files. "
+            f"Based on the run history and your original instructions, "
+            f"produce your final output NOW as exactly one JSON object."
+        )
+        result = send(correction, max_tool_calls=12, max_identical=3)
+        if result.aborted_reason:
+            raise RuntimeError(
+                f"{agent.name} aborted twice ({result.aborted_reason}: "
+                f"{result.aborted_detail}) — refusing to loop again")
     envelope, attempt = _parse_with_retries(run, phase, call, result, send)
 
     # claim gates — violations flow back into the SAME session as corrections

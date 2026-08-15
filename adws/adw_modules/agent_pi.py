@@ -276,9 +276,33 @@ def run(request: PiRequest, on_event: Optional[Callable[[dict], None]] = None,
     # truncates.
     RAW_CAP_BYTES = 100 * 1024 * 1024
     raw_bytes = 0
+    # Tool-loop guard state: count completed tool calls and the streak of
+    # identical ones (tool + exact args). A stuck agent (seen: 242x the same
+    # grep in one decide phase) is killed mid-turn instead of draining the
+    # run. Identity compares the full command/args string, so a genuine
+    # exploration of distinct files never trips it.
+    tool_calls = 0
+    identical_streak = 0
+    last_signature: Optional[str] = None
+    # tool_execution_end does not always carry args; stash them from the
+    # start event (mirrors ToolCallTracker) so the signature is exact.
+    open_args: dict[str, str] = {}
+
+    def _abort(reason: str, detail: str) -> None:
+        result.aborted_reason = reason
+        result.aborted_detail = detail
+        try:
+            process.terminate()
+        except OSError:
+            pass
+
     with raw_path.open("a", encoding="utf-8") as raw:
         assert process.stdout is not None
         for line in process.stdout:
+            if request.deadline_at is not None and time.time() > request.deadline_at:
+                _abort("phase_timeout",
+                       f"phase deadline passed ({(time.time() - request.deadline_at):.0f}s ago)")
+                break
             raw_bytes += len(line.encode("utf-8", "replace"))
             if raw_bytes <= RAW_CAP_BYTES:
                 raw.write(line)
@@ -290,6 +314,32 @@ def run(request: PiRequest, on_event: Optional[Callable[[dict], None]] = None,
                 event = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            abort_pending: Optional[str] = None
+            if event.get("type") == "tool_execution_start":
+                call_id = str(event.get("toolCallId") or "")
+                if call_id:
+                    open_args[call_id] = json.dumps(
+                        event.get("args") or {}, sort_keys=True, ensure_ascii=False)
+            elif event.get("type") == "tool_execution_end":
+                tool_calls += 1
+                call_id = str(event.get("toolCallId") or "")
+                args_json = json.dumps(
+                    event.get("args") or {}, sort_keys=True, ensure_ascii=False)
+                if args_json == "{}":
+                    args_json = open_args.pop(call_id, "{}")
+                signature = f"{event.get('toolName')}|{args_json}"
+                identical_streak = identical_streak + 1 if signature == last_signature else 1
+                last_signature = signature
+                if identical_streak >= request.max_identical_tool_calls:
+                    abort_pending = "tool_loop"
+                elif tool_calls >= request.max_tool_calls:
+                    abort_pending = "tool_cap"
+            if on_event:
+                on_event(event)
+            if abort_pending:
+                _abort(abort_pending, f"{tool_calls} tool call(s), last {identical_streak} identical ({event.get('toolName')})")
+                break
+
             if event.get("type") == "message_end":
                 message = event.get("message", {})
                 if message.get("role") == "assistant":
@@ -310,9 +360,16 @@ def run(request: PiRequest, on_event: Optional[Callable[[dict], None]] = None,
                 on_event(event)
 
     stderr = process.stderr.read() if process.stderr else ""
-    result.returncode = process.wait()
+    try:
+        result.returncode = process.wait(timeout=15)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        result.returncode = process.wait()
     if on_exit:
         on_exit(process.pid)
-    if result.returncode != 0 and not result.text:
+    # A guardrail abort (tool loop / budget / deadline) is a controlled stop,
+    # not a crash — the caller re-prompts. Everything else with no final text
+    # is a real failure and should surface as one.
+    if result.returncode != 0 and not result.text and not result.aborted_reason:
         raise RuntimeError(f"pi exited {result.returncode}: {stderr.strip()[-800:]}")
     return result

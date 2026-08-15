@@ -28,6 +28,13 @@ class PhaseParams(BaseModel):
     owner: str                      # engineer's name, "git", or an agent name from config
     description: str                # REQUIRED: what this phase does and why — see below
     retries: int = 0                # agent phases: gate-failure retries via continue
+    # Phase guardrails (enforced in agent_pi.run via agents.execute): a phase
+    # whose agent loops on identical tool calls, burns its tool budget, or
+    # overruns its deadline is killed mid-turn, gets ONE corrective retry,
+    # then the phase fails — no more unbounded hangs. 0 = no deadline.
+    timeout_sec: int = 0
+    max_tool_calls: int = 100
+    max_identical_tool_calls: int = 6
 
     @field_validator("description")
     @classmethod
@@ -552,6 +559,12 @@ class PiRequest(BaseModel):
     tools: Optional[list[str]] = None
     extensions: list[str] = Field(default_factory=list)
     cwd: str = "."                  # set from run.repo_root — the codebase root agents work in
+    # Tool-loop guard + phase deadline (enforced in agent_pi.run): a stuck
+    # agent is killed mid-turn instead of burning tokens forever. deadline_at
+    # is epoch seconds; the turn is SIGTERM'd once the clock passes it.
+    max_tool_calls: int = 100
+    max_identical_tool_calls: int = 6
+    deadline_at: Optional[float] = None
 
 
 class UsageBreakdown(BaseModel):
@@ -614,6 +627,12 @@ class PiResult(BaseModel):
     # visualizer's context bar measures against `context_window`.
     context_tokens: int = 0
     context_window: int = 0         # 0 when the registry declares no ceiling
+    # Non-None when agent_pi.run killed the turn before a final message:
+    # "tool_loop" (identical repeated calls), "tool_cap" (budget exhausted),
+    # or "phase_timeout" (deadline passed). The caller re-prompts once with a
+    # hard "stop using tools" instruction, then fails the phase on a repeat.
+    aborted_reason: Optional[str] = None
+    aborted_detail: str = ""
 
 
 class ContentOutput(EnvelopeBase):
