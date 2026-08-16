@@ -10,13 +10,6 @@ import com.getcapacitor.annotation.CapacitorPlugin;
 
 import com.petrockstudios.aquaflow.BuildConfig;
 
-import com.google.mlkit.genai.GenAiSdk;
-import com.google.mlkit.genai.GenerativeModel;
-import com.google.mlkit.genai.type.DownloadState;
-import com.google.mlkit.genai.type.DownloadStateCallback;
-import com.google.mlkit.genai.type.GenerateContentCallback;
-import com.google.mlkit.genai.type.GenerateContentResponse;
-
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -52,12 +45,19 @@ import java.util.concurrent.Executors;
  *   - The key is never logged. The native REST path sends it via the
  *     "x-goog-api-key" HTTP header (never in the URL).
  *
- * NOTE on the GenAiSdk surface (spec §7.1): com.google.mlkit:genai-inference
- * is pinned to 1.0.0. The exact callback types/method names below match the
- * documented 1.0.0 API (GenerativeModel -> isDownloaded() /
- * downloadModel(executor, callback) / generateContent(...)). If the resolved
- * jar exposes a different surface, adjust ONLY these private helper methods on
- * the studio machine (G:\android-sdk) against the resolved jar's javadoc.
+ * BUILD-TIME FLAG (spec §7.1): the official Tier-1 artifact
+ * com.google.mlkit:genai-inference is NOT published on Google Maven or
+ * Maven Central as of this build (verified: group-index has no
+ * "genai-inference"; direct POM probes return 404 for 1.0.0/1.1.0/etc.;
+ * genai-common only carries com.google.mlkit.genai.common.*, not GenAiSdk).
+ * Per §7.1 we do NOT guess a version. Tier 1 therefore degrades gracefully:
+ * every Tier-1 method resolves with unavailable/empty results and logs the
+ * reason, so the web ladder (nano -> gemini -> offline knowledge bank) drops
+ * to Tier 2/3 exactly as designed for unsupported/offline devices. Tier 2
+ * (getRemoteApiKey / generateRemoteContent) is fully wired and compiled.
+ * To re-enable Tier 1: restore the resolvable artifact (or the §7.1 AICore
+ * fallback com.google.android.gms:play-services-ai as its own scoped pass)
+ * and implement the native call path against the resolved jar's javadoc.
  */
 @CapacitorPlugin(name = "AquaFlowGenAI")
 public class AquaFlowGenAIPlugin extends Plugin {
@@ -72,96 +72,65 @@ public class AquaFlowGenAIPlugin extends Plugin {
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
 
     // ------------------------------------------------------------------
-    // Tier 1: Gemini Nano on-device
+    // Tier 1: Gemini Nano on-device (graceful degradation when the ML Kit
+    // GenAI artifact is not resolvable - see BUILD-TIME FLAG above)
     // ------------------------------------------------------------------
+
+    private static boolean tier1SdkPresent() {
+        try {
+            Class.forName("com.google.mlkit.genai.GenAiSdk");
+            return true;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
 
     @PluginMethod
     public void isNanoAvailable(PluginCall call) {
-        try {
-            GenerativeModel model = GenAiSdk.getGenerativeModel(MODEL_NAME);
-            JSObject ret = new JSObject();
-            ret.put("available", model != null);
-            ret.put("reason", model != null ? "ok" : "unsupported-device");
-            call.resolve(ret);
-        } catch (Throwable t) {
-            Log.i(TAG, "Gemini Nano not available on this device: " + t.getMessage());
-            JSObject ret = new JSObject();
+        JSObject ret = new JSObject();
+        if (!tier1SdkPresent()) {
             ret.put("available", false);
-            ret.put("reason", "unsupported-device");
+            ret.put("reason", "unavailable-dependency");
             call.resolve(ret);
+            return;
         }
+        // SDK present: complete the native call path against the resolved
+        // jar's javadoc (spec §7.1). Until then, degrade to
+        // unsupported-device so the ladder still drops to Tier 2/3.
+        ret.put("available", false);
+        ret.put("reason", "unsupported-device");
+        call.resolve(ret);
     }
 
     @PluginMethod
     public void getModelStatus(PluginCall call) {
         executor.execute(() -> {
-            try {
-                GenerativeModel model = GenAiSdk.getGenerativeModel(MODEL_NAME);
-                boolean downloaded = model != null && model.isDownloaded();
-                JSObject ret = new JSObject();
-                ret.put("status", downloaded ? "downloaded" : "notDownloaded");
-                ret.put("progress", downloaded ? 1.0 : 0.0);
-                call.resolve(ret);
-            } catch (Throwable t) {
-                JSObject ret = new JSObject();
+            JSObject ret = new JSObject();
+            if (!tier1SdkPresent()) {
                 ret.put("status", "unavailable");
                 ret.put("progress", 0);
                 call.resolve(ret);
+                return;
             }
+            ret.put("status", "unavailable");
+            ret.put("progress", 0);
+            call.resolve(ret);
         });
     }
 
     @PluginMethod
     public void downloadModel(PluginCall call) {
         executor.execute(() -> {
-            try {
-                GenerativeModel model = GenAiSdk.getGenerativeModel(MODEL_NAME);
-                if (model == null) {
-                    JSObject ret = new JSObject();
-                    ret.put("status", "unavailable");
-                    ret.put("progress", 0);
-                    call.resolve(ret);
-                    return;
-                }
-                if (model.isDownloaded()) {
-                    JSObject ret = new JSObject();
-                    ret.put("status", "downloaded");
-                    ret.put("progress", 1.0);
-                    call.resolve(ret);
-                    return;
-                }
-                model.downloadModel(executor, new DownloadStateCallback() {
-                    @Override
-                    public void onDownloadProgress(DownloadState state) {
-                        double progress = progressOf(state);
-                        notifyDownloadProgress(progress);
-                    }
-
-                    @Override
-                    public void onDownloadComplete() {
-                        notifyDownloadProgress(1.0);
-                        JSObject ret = new JSObject();
-                        ret.put("status", "downloaded");
-                        ret.put("progress", 1.0);
-                        call.resolve(ret);
-                    }
-
-                    @Override
-                    public void onDownloadFailed(Exception e) {
-                        Log.w(TAG, "Nano model download failed", e);
-                        JSObject ret = new JSObject();
-                        ret.put("status", "notDownloaded");
-                        ret.put("progress", 0);
-                        call.resolve(ret);
-                    }
-                });
-            } catch (Throwable t) {
-                Log.w(TAG, "Nano model download start failed", t);
-                JSObject ret = new JSObject();
+            JSObject ret = new JSObject();
+            if (!tier1SdkPresent()) {
                 ret.put("status", "unavailable");
                 ret.put("progress", 0);
                 call.resolve(ret);
+                return;
             }
+            ret.put("status", "unavailable");
+            ret.put("progress", 0);
+            call.resolve(ret);
         });
     }
 
@@ -173,37 +142,14 @@ public class AquaFlowGenAIPlugin extends Plugin {
             return;
         }
         executor.execute(() -> {
-            try {
-                GenerativeModel model = GenAiSdk.getGenerativeModel(MODEL_NAME);
-                if (model == null) {
-                    JSObject ret = new JSObject();
-                    ret.put("text", "");
-                    call.resolve(ret);
-                    return;
-                }
-                model.generateContent(prompt, executor, new GenerateContentCallback() {
-                    @Override
-                    public void onSuccess(GenerateContentResponse response) {
-                        String text = (response != null && response.getText() != null) ? response.getText() : "";
-                        JSObject ret = new JSObject();
-                        ret.put("text", text);
-                        call.resolve(ret);
-                    }
-
-                    @Override
-                    public void onFailure(Exception e) {
-                        Log.w(TAG, "Nano generateContent failed", e);
-                        JSObject ret = new JSObject();
-                        ret.put("text", "");
-                        call.resolve(ret);
-                    }
-                });
-            } catch (Throwable t) {
-                Log.w(TAG, "Nano generateContent start failed", t);
-                JSObject ret = new JSObject();
+            JSObject ret = new JSObject();
+            if (!tier1SdkPresent()) {
                 ret.put("text", "");
                 call.resolve(ret);
+                return;
             }
+            ret.put("text", "");
+            call.resolve(ret);
         });
     }
 
@@ -308,27 +254,6 @@ public class AquaFlowGenAIPlugin extends Plugin {
     // ------------------------------------------------------------------
     // Helpers
     // ------------------------------------------------------------------
-
-    private void notifyDownloadProgress(double progress) {
-        JSObject data = new JSObject();
-        data.put("status", "downloading");
-        data.put("progress", progress);
-        notifyListeners(EVENT_DOWNLOAD_PROGRESS, data, true);
-    }
-
-    private static double progressOf(DownloadState state) {
-        if (state == null) return 0;
-        if (state instanceof DownloadState.Downloaded) return 1.0;
-        if (state instanceof DownloadState.Downloading) {
-            try {
-                double p = ((DownloadState.Downloading) state).getProgress();
-                return (p >= 0 && p <= 1) ? p : 0;
-            } catch (Throwable t) {
-                return 0;
-            }
-        }
-        return 0;
-    }
 
     private static String readAll(InputStream in) throws Exception {
         StringBuilder sb = new StringBuilder();

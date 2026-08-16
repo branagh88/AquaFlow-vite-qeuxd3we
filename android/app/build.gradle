@@ -34,11 +34,10 @@ android {
     buildFeatures {
         buildConfig = true
     }
-        aaptOptions {
-             // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
-             // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
-            ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
-        }
+    aaptOptions {
+         // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
+         // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
+        ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
     }
     buildTypes {
         release {
@@ -60,10 +59,15 @@ dependencies {
     implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
     implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
     implementation project(':capacitor-android')
-    // Tier 1: Gemini Nano on-device via ML Kit GenAI (pinned; spec §7.1).
-    // If 1.0.0 fails to resolve from Google Maven, STOP and re-flag per §7.1
-    // (AICore SDK play-services-ai is the fallback) - do not guess versions.
-    implementation "com.google.mlkit:genai-inference:1.0.0"
+    // Tier 1: Gemini Nano on-device via ML Kit GenAI.
+    // BUILD-TIME FLAG (spec §7.1): com.google.mlkit:genai-inference is NOT
+    // published on Google Maven or Maven Central (verified 404; group-index
+    // has no genai-inference). Rather than guess a version, this build omits
+    // the artifact and AquaFlowGenAIPlugin degrades Tier 1 gracefully
+    // (resolves unavailable/empty so the ladder drops to Tier 2/3). Restore
+    // the dependency here when the artifact resolves, or implement the §7.1
+    // AICore fallback (com.google.android.gms:play-services-ai) as its own
+    // scoped pass.
     testImplementation "junit:junit:$junitVersion"
     androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
     androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
