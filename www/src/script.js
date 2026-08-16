@@ -362,7 +362,7 @@ const AI_STORAGE_KEYS = {
 
 function defaultAiChatHistory() {
   return [
-    { role: 'model', parts: [{ text: "Hello Master Technician! I am your AquaFlow Hybrid AI Expert. Ask me about 1/2HP to 1HP multi-manufacturer pump curves, Hazen-Williams friction tables, or Amtrol Well-X-Trol tank sizing. Every reply is enriched by AICore Deep Diagnostics (symptom, probable causes, verification checks, manufacturer guidance for Grundfos CUE 100 / Pentek / Clack). When a data connection is active I attempt to sync with an on-device AI model for richer diagnostics, and I always fall back to the offline field knowledge base." }] }
+    { role: 'model', parts: [{ text: "Hello Master Technician! I am your AquaFlow Hybrid AI Expert. Ask me about 1/2HP to 1HP multi-manufacturer pump curves, Hazen-Williams friction tables, or Amtrol Well-X-Trol tank sizing. Every reply is enriched by AICore Deep Diagnostics (symptom, probable causes, verification checks, manufacturer guidance for Grundfos CUE 100 / Pentek / Clack). Replies run a 3-tier hybrid inference ladder: Gemini Nano on-device (Android) when ready, then online Gemini with Search Grounding when a connection and API key are configured, and I always fall back to the offline field knowledge base + AICore." }] }
   ];
 }
 
@@ -1376,17 +1376,21 @@ function renderMasterReport() {
 
 
 // ============================================================
-// AI DIAGNOSTICS MODULE (Offline Knowledge Base + Local-AI Sync)
+// AI DIAGNOSTICS MODULE (Hybrid Inference / Fallback Ladder)
 // Vanilla JS port. The offline keyword knowledge base
-// (processNaturalLanguageQuery) is ALWAYS the fallback; when a
-// data connection is active the module attempts to load
-// Transformers.js on demand for richer on-device diagnostics.
+// (processNaturalLanguageQuery) + AquaFlowAICore enrichment is ALWAYS the
+// Tier-3 fallback. On top of that base, getAiReply() runs a 3-tier hybrid
+// ladder: Tier 1 Gemini Nano (on-device, Android) -> Tier 2 Gemini with
+// Search Grounding (online + key) -> Tier 3 offline KB + AICore. Tiers 1/2
+// return '' on any failure so the reply always drops to the next tier and
+// the field tool never blocks on network or model state.
 // ============================================================
 let aiInput = '';
 
 // --- Connectivity state ---------------------------------------------------
 let aiConnectivity = { online: typeof navigator !== 'undefined' ? navigator.onLine : true };
-let aiModelStatus = 'idle'; // idle | loading | ready | unavailable
+let aiModelStatus = 'idle'; // idle | loading | ready | unavailable (driven by Nano on Android)
+let nanoStatus = 'unknown'; // unknown | unavailable | notDownloaded | downloading | downloaded | ready
 let aiSyncEndpoint = '';
 try {
   const cfg = (typeof window !== 'undefined' && window.AQUAFLOW_CONFIG) || {};
@@ -1455,6 +1459,8 @@ async function flushAiPendingSync() {
 function initAiConnectivity() {
   if (typeof window === 'undefined') return;
   aiConnectivity.online = getAiConnectivity();
+  loadKnowledgeBank();   // bundled asset bank (src/ai-knowledge-bank.json), graceful offline failure
+  refreshNanoStatus();   // Tier 1 status probe; web stubs -> unavailable -> falls to Tier 2/3
   window.addEventListener('online', () => {
     aiConnectivity.online = true;
     updateAiStatusIndicator();
@@ -1467,71 +1473,93 @@ function initAiConnectivity() {
   });
 }
 
-// --- On-device / remote AI path (Transformers.js from CDN) ----------------
-function loadLocalAiModel() {
-  if (aiModelStatus === 'loading' || aiModelStatus === 'ready') return;
-  if (!getAiConnectivity()) {
+// --- Tier 1: Gemini Nano on-device status (ML Kit GenAI via Capacitor) ----
+// Replaces the old Transformers.js CDN loader. aiModelStatus badge semantics
+// (idle | loading | ready | unavailable) are preserved; on plain web the
+// AquaFlowGenAI stubs report unavailable and the ladder falls to Tier 2/3.
+async function refreshNanoStatus() {
+  if (typeof AquaFlowGenAI === 'undefined' || !AquaFlowGenAI) {
     aiModelStatus = 'unavailable';
+    nanoStatus = 'unavailable';
     updateAiStatusIndicator();
     return;
   }
-  aiModelStatus = 'loading';
-  updateAiStatusIndicator();
-
-  const script = document.createElement('script');
-  script.src = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@2.17.2/dist/transformers.min.js';
-  script.async = true;
-  script.crossOrigin = 'anonymous';
-  script.onload = async () => {
-    try {
-      const tf = window.transformers;
-      if (!tf || !tf.pipeline) throw new Error('Transformers.js pipeline unavailable');
-      if (tf.env) tf.env.allowLocalModels = false;
-      window.__aquaflowAiPipeline = await tf.pipeline('text2text-generation', 'Xenova/LaMini-Flan-T5-77M');
-      aiModelStatus = 'ready';
-    } catch (err) {
+  try {
+    const avail = await AquaFlowGenAI.isNanoAvailable();
+    if (!avail || !avail.available) {
       aiModelStatus = 'unavailable';
-    }
-    updateAiStatusIndicator();
-  };
-  script.onerror = () => {
-    aiModelStatus = 'unavailable';
-    updateAiStatusIndicator();
-  };
-  // Safety timeout so the UI never stays in "loading" forever.
-  setTimeout(() => {
-    if (aiModelStatus === 'loading') {
-      aiModelStatus = 'unavailable';
+      nanoStatus = 'unavailable';
       updateAiStatusIndicator();
+      return;
     }
-  }, 60000);
+    const status = await AquaFlowGenAI.getModelStatus();
+    const st = (status && status.status) || 'notDownloaded';
+    nanoStatus = (st === 'downloaded') ? 'ready' : st;
+    if (st === 'downloaded') aiModelStatus = 'ready';
+    else if (st === 'downloading') aiModelStatus = 'loading';
+    else aiModelStatus = 'idle';
+  } catch (e) {
+    aiModelStatus = 'unavailable';
+    nanoStatus = 'unavailable';
+  }
+  updateAiStatusIndicator();
+}
 
-  document.head.appendChild(script);
+// User-consented model download (Nano requires internet + consent).
+async function downloadNanoModel() {
+  if (typeof AquaFlowGenAI === 'undefined' || !AquaFlowGenAI || typeof AquaFlowGenAI.downloadModel !== 'function') return;
+  if (aiModelStatus === 'loading' || aiModelStatus === 'ready') return;
+  aiModelStatus = 'loading';
+  nanoStatus = 'downloading';
+  updateAiStatusIndicator();
+  await AquaFlowGenAI.downloadModel();
+  await refreshNanoStatus();
 }
 
 function maybeLoadLocalAi() {
-  if (aiModelStatus === 'idle' && getAiConnectivity()) loadLocalAiModel();
+  // Tier 1 status refresh (was the Transformers.js CDN loader). The model
+  // download itself is explicit user consent via downloadNanoModel().
+  if (aiModelStatus === 'idle') refreshNanoStatus();
 }
 
-async function runLocalAiDiagnosis(query) {
-  if (aiModelStatus !== 'ready' || !window.__aquaflowAiPipeline) return '';
-  try {
-    const prompt = 'You are a water well pump field technician. Give concise, safe troubleshooting advice for: ' + query;
-    const output = await window.__aquaflowAiPipeline(prompt, { max_new_tokens: 80 });
-    let text = '';
-    if (Array.isArray(output) && output.length) {
-      text = output[0] && (output[0].generated_text || output[0].summary_text || '');
-    } else if (output && output.generated_text) {
-      text = output.generated_text;
-    }
-    text = String(text || '').trim();
-    if (!text) return '';
-    return '<br><br><div class="bg-gradient-to-r from-teal-900/40 to-blue-900/40 border border-teal-500/30 rounded-xl p-3 text-xs text-teal-100"><b>On-Device AI Diagnostic Note (local model):</b> ' + escapeHtml(text) + '</div>';
-  } catch (e) {
-    aiModelStatus = 'unavailable';
-    updateAiStatusIndicator();
-    return '';
+// --- Tier prompt/context builders -----------------------------------------
+function buildTierPrompt(query, context) {
+  let prompt = 'You are a water well pump field technician. Provide concise, safe troubleshooting advice for the following query.\n\nQUERY: ' + String(query || '');
+  if (context && context.kbTree && context.kbTree.title) {
+    prompt += '\n\nLOCAL DIAGNOSTIC TREE (grounding context): ' + context.kbTree.title;
+    const startNode = context.kbTree.nodes && context.kbTree.nodes.start;
+    if (startNode && startNode.question) prompt += '\nFirst question: ' + startNode.question;
   }
+  return prompt;
+}
+
+async function tier1Nano(query, context) {
+  if (typeof AquaFlowGenAI === 'undefined' || !AquaFlowGenAI || typeof AquaFlowGenAI.generateContent !== 'function') return '';
+  try {
+    const text = await AquaFlowGenAI.generateContent(buildTierPrompt(query, context));
+    if (!text) return '';
+    return '<br><br><div class="bg-gradient-to-r from-violet-900/40 to-fuchsia-900/40 border border-violet-500/30 rounded-xl p-3 text-xs text-violet-100"><b>Gemini Nano (on-device):</b> ' + escapeHtml(text) + '</div>';
+  } catch (e) {
+    return ''; // drop to Tier 2 / Tier 3
+  }
+}
+
+async function tier2Remote(query, context) {
+  if (typeof RemoteGemini === 'undefined' || !RemoteGemini || typeof RemoteGemini.generateWithGrounding !== 'function') return '';
+  try {
+    const text = await RemoteGemini.generateWithGrounding(query, context);
+    if (!text) return '';
+    return '<br><br><div class="bg-gradient-to-r from-blue-900/40 to-indigo-900/40 border border-blue-500/30 rounded-xl p-3 text-xs text-blue-100"><b>Gemini with Search Grounding (online):</b> ' + escapeHtml(text) + '</div>';
+  } catch (e) {
+    return ''; // drop to Tier 3
+  }
+}
+
+function appendTierFooter(reply, tier) {
+  let label = 'Offline knowledge base + AICore deep diagnostics';
+  if (tier === 'nano') label = 'Powered by Gemini Nano (on-device)';
+  else if (tier === 'remote') label = 'Powered by Gemini with Search Grounding (online)';
+  return reply + '<div class="mt-3 pt-2 border-t border-slate-700/60 text-[10px] text-slate-500">' + label + '</div>';
 }
 
 async function getAiReply(query) {
@@ -1540,7 +1568,7 @@ async function getAiReply(query) {
   // AICore deep diagnostics enrichment (window.AquaFlowAICore is loaded
   // from index.html BEFORE this script). It is fully offline-capable;
   // when the service is unavailable we gracefully fall back to the plain
-  // offline knowledge base reply.
+  // offline knowledge base reply. UNCHANGED (Tier 3).
   if (typeof AquaFlowAICore !== 'undefined' && AquaFlowAICore && typeof AquaFlowAICore.enrichDiagnostics === 'function') {
     try {
       const enriched = AquaFlowAICore.enrichDiagnostics(query, kbReply);
@@ -1549,13 +1577,49 @@ async function getAiReply(query) {
       // AICore enrichment failed; keep the offline knowledge base reply.
     }
   }
-  if (!getAiConnectivity()) return reply; // Offline: knowledge base + AICore only.
-  if (aiModelStatus === 'idle') maybeLoadLocalAi();
-  if (aiModelStatus === 'ready') {
-    const modelNote = await runLocalAiDiagnosis(query);
-    if (modelNote) return reply + modelNote;
+
+  // Bundled asset bank grounding context for Tier 1/2 prompts.
+  const tree = findTreeForQuery(query);
+  const context = { query: query, kbReply: kbReply, kbTree: tree };
+
+  // Dev-only manual tier forcing for verification:
+  // window.__forceTier = '1'|'nano' | '2'|'remote' | '3'|'kb'|'offline'
+  const forced = (typeof window !== 'undefined' && window.__forceTier) ? String(window.__forceTier).toLowerCase() : '';
+  if (forced === '1' || forced === 'nano') {
+    const nanoNote = await tier1Nano(query, context);
+    if (nanoNote) return appendTierFooter(reply + nanoNote, 'nano');
+    return appendTierFooter(reply, 'kb');
   }
-  return reply; // Graceful fallback to the offline knowledge base.
+  if (forced === '2' || forced === 'remote') {
+    const remoteNote = await tier2Remote(query, context);
+    if (remoteNote) return appendTierFooter(reply + remoteNote, 'remote');
+    return appendTierFooter(reply, 'kb');
+  }
+  if (forced === '3' || forced === 'kb' || forced === 'offline') {
+    return appendTierFooter(reply, 'kb');
+  }
+
+  // TIER 1: Gemini Nano (on-device, ready).
+  if (nanoStatus === 'ready' || aiModelStatus === 'ready') {
+    const nanoNote = await tier1Nano(query, context);
+    if (nanoNote) return appendTierFooter(reply + nanoNote, 'nano');
+  }
+  // TIER 2: Online Gemini + Search Grounding (online && key configured).
+  if (getAiConnectivity()) {
+    try {
+      const configured = (typeof RemoteGemini !== 'undefined' && RemoteGemini && typeof RemoteGemini.isConfigured === 'function')
+        ? await RemoteGemini.isConfigured()
+        : false;
+      if (configured) {
+        const remoteNote = await tier2Remote(query, context);
+        if (remoteNote) return appendTierFooter(reply + remoteNote, 'remote');
+      }
+    } catch (e) {
+      // Fall through to Tier 3.
+    }
+  }
+  // TIER 3: offline KB + AICore (already computed; offline-first guarantee).
+  return appendTierFooter(reply, 'kb');
 }
 
 // --- Status indicator ------------------------------------------------------
@@ -1576,13 +1640,27 @@ function aiStatusIndicatorHtml() {
       modelBadge = '<span class="bg-slate-500/20 text-slate-300 border border-slate-500/30 px-2 py-0.5 rounded-full text-[10px] font-bold">KNOWLEDGE BASE</span>';
     }
   }
+  // NANO mini-badge when the on-device Gemini Nano model is ready (§6).
+  let nanoBadge = '';
+  if (nanoStatus === 'ready') {
+    nanoBadge = '<span class="bg-violet-500/20 text-violet-300 border border-violet-500/40 px-2 py-0.5 rounded-full text-[10px] font-bold">NANO</span>';
+  }
+  // User-consented Nano model download affordance (needs internet + consent).
+  let nanoAction = '';
+  if (nanoStatus === 'notDownloaded' && getAiConnectivity()) {
+    nanoAction = '<button onclick="downloadNanoModel()" class="bg-violet-600 hover:bg-violet-500 text-white px-2 py-0.5 rounded-full text-[10px] font-bold">Download Nano model</button>';
+  } else if (nanoStatus === 'downloading' || aiModelStatus === 'loading') {
+    nanoAction = '<span class="bg-amber-500/20 text-amber-300 border border-amber-500/30 px-2 py-0.5 rounded-full text-[10px] font-bold">NANO DOWNLOADING…</span>';
+  }
   return '<div id="ai-status-indicator" class="flex items-center gap-2 flex-wrap">' +
     '<span class="inline-flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider px-2.5 py-1 rounded-full border ' + (online ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40' : 'bg-rose-500/15 text-rose-300 border-rose-500/40') + '">' +
       '<span class="w-2 h-2 rounded-full ' + (online ? 'bg-emerald-400' : 'bg-rose-400') + ' animate-pulse"></span>' +
       (online ? 'Online' : 'Offline') +
     '</span>' +
     modelBadge +
+    nanoBadge +
     aicoreBadge +
+    nanoAction +
     (pendingCount > 0 ? '<span class="bg-blue-500/20 text-blue-300 border border-blue-500/30 px-2 py-0.5 rounded-full text-[10px] font-bold">' + pendingCount + ' PENDING SYNC</span>' : '') +
   '</div>';
 }
@@ -1696,6 +1774,43 @@ function processNaturalLanguageQuery(query) {
   return `<b>AquaFlow Expert Analysis:</b><br>I've reviewed your query regarding <i>"${escapeHtml(query)}"</i>. For precise troubleshooting:<br>• Verify incoming 230V power supply across L1 and L2.<br>• Check motor winding resistance with an ohmmeter for balance.<br>• Inspect sensor wiring and shield grounding.`;
 }
 
+// --- Bundled static asset bank (src/ai-knowledge-bank.json) ---------------
+// Fetched at init, cached in memory, and served offline because it ships
+// inside the app bundle. Graceful failure: cache stays null and the tiers
+// simply skip KB grounding (Tier 3 still works from expertKnowledgeBase).
+let __aiKnowledgeBank = null;
+
+async function loadKnowledgeBank() {
+  try {
+    const resp = await fetch('/src/ai-knowledge-bank.json', { cache: 'no-cache' });
+    if (!resp.ok) throw new Error('KB fetch failed: ' + resp.status);
+    const data = await resp.json();
+    if (!data || !Array.isArray(data.trees)) throw new Error('KB schema invalid');
+    __aiKnowledgeBank = data;
+  } catch (e) {
+    // Graceful offline failure: tiers skip KB grounding, nothing else breaks.
+    __aiKnowledgeBank = null;
+  }
+  if (typeof window !== 'undefined') window.__aiKnowledgeBank = __aiKnowledgeBank;
+  return __aiKnowledgeBank;
+}
+
+function findTreeForQuery(query) {
+  if (!__aiKnowledgeBank || !Array.isArray(__aiKnowledgeBank.trees)) return null;
+  const q = String(query || '').toLowerCase();
+  let best = null;
+  let bestScore = 0;
+  for (const tree of __aiKnowledgeBank.trees) {
+    let score = 0;
+    const kws = tree.keywords || [];
+    for (const kw of kws) {
+      if (q.indexOf(String(kw).toLowerCase()) !== -1) score += 2;
+    }
+    if (score > bestScore) { bestScore = score; best = tree; }
+  }
+  return bestScore > 0 ? best : null;
+}
+
 function aiMessageHtml(msg) {
   const isUser = msg.role === 'user';
   const text = isUser ? escapeHtml(msg.parts[0].text) : msg.parts[0].text;
@@ -1740,7 +1855,7 @@ function renderAI() {
           <h2 class="text-2xl font-black text-white flex items-center gap-2">
             <i data-lucide="bot" class="w-7 h-7 text-teal-400"></i> AquaFlow AI Expert
           </h2>
-          <p class="text-sm text-slate-400">Field knowledge base for Grundfos, Pentek, and Clack valves with AICore deep diagnostics (symptom, probable causes, verification checks). When online, an on-device AI model adds further enrichment with automatic fallback.</p>
+          <p class="text-sm text-slate-400">Field knowledge base for Grundfos, Pentek, and Clack valves with AICore deep diagnostics (symptom, probable causes, verification checks). Replies run a 3-tier hybrid ladder: Gemini Nano on-device (Android) &rarr; Gemini with Search Grounding (online) &rarr; offline knowledge base + AICore, with automatic fallback so the field tool never blocks on the network.</p>
         </div>
         ${aiStatusIndicatorHtml()}
       </div>

@@ -1,0 +1,386 @@
+{
+  "version": 1,
+  "updated": "2025-08-16T00:30:00Z",
+  "description": "AquaFlow bundled offline diagnostic decision trees. Mirrors the AquaFlowAICore symptom router (shortCycling, lowPressure, noWater, pumpRunsContinuous, vfdGrundfos, pentek, clack, waterQuality, electrical) so every inference tier grounds on the same field knowledge. Ships inside the app bundle and is served offline.",
+  "trees": [
+    {
+      "id": "pressure-tank-short-cycling",
+      "title": "Pressure tank short cycling",
+      "keywords": ["short cycle", "short-cycl", "rapid", "cycling", "on and off", "on/off", "turns on and off", "waterlogged", "water logged", "bladder", "air charge", "tank pressure"],
+      "nodes": {
+        "start": {
+          "question": "Does the pump restart within seconds of cut-out?",
+          "branches": [
+            { "answer": "yes", "next": "check-precharge" },
+            { "answer": "no", "next": "check-demand" }
+          ]
+        },
+        "check-precharge": {
+          "prompt": "Compare tank precharge to cut-in minus 2 PSI (tank empty, pump power off). Verify the drawdown against the Pressure Tank calculator.",
+          "diagnosis": "Waterlogged tank or wrong precharge",
+          "checks": [
+            "Drain the tank with pump power off and measure air charge at the schrader valve with a tire gauge.",
+            "Precharge rule of thumb: cut-in minus 2 PSI.",
+            "Restore power and time the pump: at normal demand it should run at least 60 seconds between starts.",
+            "Water at the schrader valve means a ruptured bladder - replace the tank.",
+            "Inspect the check valve / foot valve for leaks that bleed pressure back down the drop pipe."
+          ],
+          "references": ["grundfos.cue100.p020", "pentek.intellidrive.transducer", "amtrol.wellxtrol.drawdown"]
+        },
+        "check-demand": {
+          "prompt": "Check whether the cycling correlates with a specific fixture draw or is continuous regardless of demand.",
+          "diagnosis": "Undersized tank, faulty switch, or system leak",
+          "checks": [
+            "Compare installed tank drawdown against the Pressure Tank calculator for the pump size.",
+            "Inspect pressure switch contacts and gauge for pitting, wear, or early restart.",
+            "Watch the tank gauge for a slow pressure drop with all faucets closed (leak indicator).",
+            "Verify the pump is not running off its curve (Well & Friction Loss calculator vs pump curve)."
+          ],
+          "references": ["amtrol.wellxtrol.drawdown", "grundfos.cue100.p017"]
+        }
+      }
+    },
+    {
+      "id": "low-pressure",
+      "title": "Low or weak water pressure at fixtures",
+      "keywords": ["low pressure", "weak pressure", "no pressure", "pressure drop", "low flow", "weak flow", "not building", "loses pressure", "pressure loss"],
+      "nodes": {
+        "start": {
+          "question": "Is the pressure low everywhere or only at one fixture?",
+          "branches": [
+            { "answer": "one fixture", "next": "fixture-side" },
+            { "answer": "everywhere", "next": "system-side" }
+          ]
+        },
+        "fixture-side": {
+          "prompt": "A single weak fixture usually points to a local restriction rather than the pump system.",
+          "diagnosis": "Local restriction: clogged aerator, supply stop, or fixture valve",
+          "checks": [
+            "Clean the aerator and fixture screen.",
+            "Open the fixture supply stop fully.",
+            "Compare against a neighboring fixture on the same branch."
+          ],
+          "references": ["general.plumbing.branch"]
+        },
+        "system-side": {
+          "prompt": "Whole-house low pressure: isolate treatment gear, verify tank gauge and pump curve.",
+          "diagnosis": "Worn pump, clogged treatment gear, or wrong cut-out setpoint",
+          "checks": [
+            "Read the tank gauge at rest and compare with switch cut-in/cut-out.",
+            "Bypass the softener/filter and re-test: pressure recovery points to treatment gear.",
+            "Run the Well & Friction Loss calculator and compare operating GPM/TDH against the pump curve.",
+            "Time pressure recovery from cut-in to cut-out with a known faucet flow.",
+            "On Grundfos CUE 100 confirm the closed-loop pressure setpoint and feedback sensor; on Pentek Intellidrive verify the 4-20 mA transducer (AI+/AI-) and control mode."
+          ],
+          "references": ["grundfos.cue100.setpoint", "pentek.intellidrive.transducer"]
+        }
+      }
+    },
+    {
+      "id": "no-water",
+      "title": "No water / dry run / loss of prime",
+      "keywords": ["no water", "dry well", "dry run", "dry-run", "loss of prime", "lost prime", "air in line", "air in the line", "sputter", "spitting", "coughing", "gurgling"],
+      "nodes": {
+        "start": {
+          "question": "Is the pump motor actually running when the faucet is open?",
+          "branches": [
+            { "answer": "yes", "next": "running-no-water" },
+            { "answer": "no", "next": "not-running" }
+          ]
+        },
+        "running-no-water": {
+          "prompt": "Motor running but no water = loss of prime, dry well, or a failed pump/impeller. Dry run is the number one submersible killer - protect the pump.",
+          "diagnosis": "Loss of prime, dry well, or failed pump",
+          "checks": [
+            "Listen at the well seal and check amp draw versus nameplate.",
+            "Compare static/pumping water level against pump setting in the Well & Friction calculator.",
+            "Inspect the foot valve / check valve for debris holding them open.",
+            "Check for a collapsed or frozen drop pipe, or an air lock in the line.",
+            "Confirm dry-run protection is armed: Grundfos CUE 100 P020, Pentek undercurrent fault."
+          ],
+          "references": ["grundfos.cue100.p020", "grundfos.cue100.a04", "pentek.intellidrive.dryrun"]
+        },
+        "not-running": {
+          "prompt": "Pump not running: check electrical supply, overload/thermal trip, and control box.",
+          "diagnosis": "Tripped overload, no power, or failed motor/control box",
+          "checks": [
+            "Check the breaker and any overload relay: a tripped overload is a strong dry-run signal.",
+            "Measure L1/L2 voltage at the control box under load.",
+            "Megger the motor windings to confirm insulation integrity.",
+            "Inspect the control box capacitor/start components (single-phase)."
+          ],
+          "references": ["electrical.breaker", "electrical.winding"]
+        }
+      }
+    },
+    {
+      "id": "pump-runs-continuous",
+      "title": "Pump runs continuously / never shuts off",
+      "keywords": ["runs all the time", "runs constantly", "never shuts off", "never turns off", "keeps running", "won't shut off", "won't stop", "run continuously", "continuous run"],
+      "nodes": {
+        "start": {
+          "question": "Does the pump shut off when you close the ball valve downstream of the tank?",
+          "branches": [
+            { "answer": "yes", "next": "house-leak" },
+            { "answer": "no", "next": "tank-well-side" }
+          ]
+        },
+        "house-leak": {
+          "prompt": "Pump shuts off with the tank isolated: the leak is in the house service line or a fixture.",
+          "diagnosis": "Service line leak, running toilet, or open faucet",
+          "checks": [
+            "Check toilets (flapper), faucets, and outdoor spigots.",
+            "Watch the tank gauge for slow pressure drop with all faucets closed.",
+            "Isolate house branches one at a time to localize the leak."
+          ],
+          "references": ["general.plumbing.leak"]
+        },
+        "tank-well-side": {
+          "prompt": "Pump keeps running with the house isolated: problem is the tank, switch, check valve, or a VFD setpoint/transducer issue.",
+          "diagnosis": "Failed switch, waterlogged tank, stuck check valve, or VFD setpoint not reached",
+          "checks": [
+            "Inspect the pressure switch contacts and plunger for pitting or welded contacts.",
+            "Verify tank precharge and drawdown with the Pressure Tank calculator.",
+            "Check the check valve for a stuck-open condition that bleeds pressure back.",
+            "On a VFD system, verify the feedback transducer reading matches the tank gauge; check the setpoint on Grundfos CUE 100 / Pentek Intellidrive."
+          ],
+          "references": ["grundfos.cue100.setpoint", "pentek.intellidrive.transducer"]
+        }
+      }
+    },
+    {
+      "id": "grundfos-cue100",
+      "title": "Grundfos CUE 100 / VFD controller fault",
+      "keywords": ["grundfos", "cue", "cue100", "cue 100", "inverter", "vfd", "alarm", "a01", "a03", "a04", "overcurrent", "dry run", "p017", "p020", "lcp"],
+      "nodes": {
+        "start": {
+          "question": "What does the LCP display show: an alarm code or a programming/setup question?",
+          "branches": [
+            { "answer": "alarm", "next": "alarm-code" },
+            { "answer": "program", "next": "programming" }
+          ]
+        },
+        "alarm-code": {
+          "prompt": "Match the exact alarm on the LCP to the Grundfos alarm list before changing anything.",
+          "diagnosis": "CUE 100 alarm - A01 overcurrent, A03 over temperature, or A04 dry run",
+          "checks": [
+            "A01 Overcurrent: verify P017 motor rated current vs nameplate FLA, check star/delta connections, re-run motor FOC calibration.",
+            "A03 Over Temperature: check heatsink dissipation channels, ambient below 50 C (122 F), verify cooling fans.",
+            "A04 Dry Run: check priming or adjust P020 Dry Run Threshold (low current/power).",
+            "Verify the pressure transmitter wiring and signal (4-20 mA / 0-10 V)."
+          ],
+          "references": ["grundfos.cue100.p017", "grundfos.cue100.p020", "grundfos.cue100.a01", "grundfos.cue100.a04"]
+        },
+        "programming": {
+          "prompt": "Programming/commissioning: enter motor nameplate data via the Startup Wizard and set the closed-loop pressure setpoint.",
+          "diagnosis": "Motor data or setpoint configuration",
+          "checks": [
+            "Startup Wizard: enter Voltage, Frequency, Full Load Amps (FLA), Nominal RPM, Motor Power from the nameplate.",
+            "P017: verify exact motor nameplate amperage.",
+            "P020: set low current/power dry run threshold to protect against dry well conditions.",
+            "Closed-loop: select Constant Pressure control mode and set target pressure (e.g. 50 PSI)."
+          ],
+          "references": ["grundfos.cue100.p017", "grundfos.cue100.p020"]
+        }
+      }
+    },
+    {
+      "id": "pentek-intellidrive",
+      "title": "Pentek Intellidrive fault code",
+      "keywords": ["pentek", "intellidrive", "pid10", "pid20", "pid30", "pid50", "fault", "overcurrent", "transducer", "undervoltage", "trip", "sfa"],
+      "nodes": {
+        "start": {
+          "question": "What fault text is shown on the Intellidrive display?",
+          "branches": [
+            { "answer": "over current", "next": "over-current" },
+            { "answer": "dry run", "next": "dry-run" },
+            { "answer": "transducer", "next": "transducer" },
+            { "answer": "voltage", "next": "voltage" },
+            { "answer": "temperature", "next": "temperature" }
+          ]
+        },
+        "over-current": {
+          "prompt": "Motor current exceeds parameter limits - check for shorted motor cables, failing insulation, or binding pump bearings.",
+          "diagnosis": "Over Current fault",
+          "checks": [
+            "Verify motor SFA from the nameplate against the drive setting.",
+            "Megger the motor leads for insulation breakdown.",
+            "Check for binding pump bearings (amp draw, mechanical resistance).",
+            "Reset via password 7777 -> Main Menu -> Reset -> Yes only after the root cause is fixed."
+          ],
+          "references": ["pentek.intellidrive.sfa"]
+        },
+        "dry-run": {
+          "prompt": "Motor load dropped below threshold - loss of prime or water table below the pump. Do not just reset; find the cause.",
+          "diagnosis": "Under Current / Dry Run fault",
+          "checks": [
+            "Check water table and foot valve.",
+            "Confirm the pump is primed.",
+            "Verify dry-run thresholds in the drive settings."
+          ],
+          "references": ["pentek.intellidrive.dryrun"]
+        },
+        "transducer": {
+          "prompt": "Sensor signal lost or out of range (4-20 mA). Verify wiring: red in AI+, black in AI-, shield grounded.",
+          "diagnosis": "Open / Shorted Transducer",
+          "checks": [
+            "Verify red wire in AI+, black wire in AI-.",
+            "Check shield connection at the metal cable shield screw downstream of the tank.",
+            "Measure the 4-20 mA loop signal at the drive terminals."
+          ],
+          "references": ["pentek.intellidrive.transducer"]
+        },
+        "voltage": {
+          "prompt": "DC bus voltage out of limits - unstable incoming supply or wrong transformer tap.",
+          "diagnosis": "Overvoltage / Undervoltage",
+          "checks": [
+            "Measure L1/L2 voltage under load.",
+            "Check supply stability and transformer taps.",
+            "Verify wire gauge for the run length (voltage drop)."
+          ],
+          "references": ["electrical.voltage"]
+        },
+        "temperature": {
+          "prompt": "Inverter heatsink exceeds safe operating limit (>85 C). Clean cooling fins and check enclosure ventilation.",
+          "diagnosis": "Over Temperature",
+          "checks": [
+            "Clean the cooling fins.",
+            "Confirm enclosure ventilation and airflow.",
+            "Check ambient temperature around the drive."
+          ],
+          "references": ["pentek.intellidrive.temperature"]
+        }
+      }
+    },
+    {
+      "id": "clack-ws1",
+      "title": "Clack WS1 / WS1.25 softener or valve error",
+      "keywords": ["clack", "ws1", "ws1.25", "softener", "brine", "valve", "piston", "regenerate", "regeneration", "err 1", "err 2", "err 3", "encoder", "stall"],
+      "nodes": {
+        "start": {
+          "question": "Is the unit showing an error code on the display, or is it a programming/brine issue?",
+          "branches": [
+            { "answer": "error", "next": "error-code" },
+            { "answer": "program", "next": "programming" }
+          ]
+        },
+        "error-code": {
+          "prompt": "Match the error to the Clack list: Err 1/E1 cycle step failure, Err 2/E2 stalled motor, Err 3/E3 run-on timeout.",
+          "diagnosis": "Clack valve error - encoder, stalled motor, or run-on timeout",
+          "checks": [
+            "Err 1/E1: inspect the drive bracket and optical eye for debris; verify motor connection.",
+            "Err 2/E2: inspect the piston and seal/stack assembly for binding or foreign debris.",
+            "Err 3/E3: check drive bracket alignment and gear meshing.",
+            "Master reset after repairs: unplug, press and hold NEXT + REGEN while plugging back in."
+          ],
+          "references": ["clack.ws1.err1", "clack.ws1.err2", "clack.ws1.err3"]
+        },
+        "programming": {
+          "prompt": "Programming/setup or brine system check: OEM setup, hardness/capacity, regen time, and brine draw.",
+          "diagnosis": "Programming, hardness, or brine system issue",
+          "checks": [
+            "OEM setup: press NEXT and DOWN simultaneously for 3 seconds.",
+            "Set GPG hardness (1-150 range), valve type/capacity, and Day Override (1-28 days or OFF).",
+            "Set regeneration time for low water usage (default 2:00 AM).",
+            "Check salt level, brine tank water, and clean the injector nozzle/venturi.",
+            "Quick exit: press SET CLOCK to save all parameters."
+          ],
+          "references": ["clack.ws1.programming", "clack.ws1.brine"]
+        }
+      }
+    },
+    {
+      "id": "water-quality",
+      "title": "Water quality complaint (iron, hardness, odor, sediment)",
+      "keywords": ["iron", "hardness", "gpg", "odor", "rotten egg", "sulfur", "sediment", "cloudy", "stain", "staining", "taste", "smell", "tannin"],
+      "nodes": {
+        "start": {
+          "question": "What is the primary complaint: staining/odor, hard water, or visible sediment?",
+          "branches": [
+            { "answer": "stain", "next": "iron-sulfur" },
+            { "answer": "hard", "next": "hardness" },
+            { "answer": "sediment", "next": "sediment" }
+          ]
+        },
+        "iron-sulfur": {
+          "prompt": "Iron above 0.3 PPM stains fixtures and fouls resin; sulfur/rotten egg odor usually means bacterial activity or a corroding anode rod.",
+          "diagnosis": "Iron or sulfur/odor problem",
+          "checks": [
+            "Run the Water Test module and compare iron, pH, TDS to targets.",
+            "Sample at the pressure tank (before treatment) and at the tap (after) to isolate the cause.",
+            ">0.3 PPM iron needs oxidation/filtration ahead of the softener.",
+            "Sulfur odor: test the water heater separately (anode rod); treat the well with aeration or chlorination."
+          ],
+          "references": ["clack.ws1.programming", "watertest.iron", "watertest.ph"]
+        },
+        "hardness": {
+          "prompt": "Hard water scaling from elevated GPG hardness - verify softener sizing and regeneration.",
+          "diagnosis": "Hard water / softener sizing or regen issue",
+          "checks": [
+            "Confirm GPG hardness reading in the Water Test module.",
+            "Check softener capacity against actual flow and regeneration schedule.",
+            "On Clack WS1 verify hardness and capacity settings (1-150 GPG)."
+          ],
+          "references": ["clack.ws1.programming", "watertest.hardness"]
+        },
+        "sediment": {
+          "prompt": "Sediment from a new well, failing screen, or iron bacteria slime.",
+          "diagnosis": "Sediment / iron bacteria",
+          "checks": [
+            "Check for iron bacteria slime in the toilet tank or on the pressure tank.",
+            "Inspect the well screen and pump intake depth.",
+            "Consider a sediment filter ahead of treatment gear."
+          ],
+          "references": ["watertest.iron", "general.filtration"]
+        }
+      }
+    },
+    {
+      "id": "electrical",
+      "title": "Electrical fault (breaker trips, no power, hum)",
+      "keywords": ["breaker", "trip", "tripping", "electrical", "shock", "voltage", "hum", "buzz", "no power", "dead", "winding", "capacitor"],
+      "nodes": {
+        "start": {
+          "question": "Does the breaker trip immediately, or does the pump hum and fail to start?",
+          "branches": [
+            { "answer": "trip", "next": "breaker-trip" },
+            { "answer": "hum", "next": "hum-no-start" },
+            { "answer": "no power", "next": "no-power" }
+          ]
+        },
+        "breaker-trip": {
+          "prompt": "Immediate trip points to a short, ground fault, or failing start capacitor. Electrical faults are safety-critical: disconnect power before testing.",
+          "diagnosis": "Short, ground fault, or failing capacitor",
+          "checks": [
+            "Megger the motor windings to confirm insulation integrity.",
+            "Inspect all splices for water; use waterproof splice kits.",
+            "Check the start capacitor / control box components (single-phase).",
+            "Verify wire gauge against the total run length for the pump HP."
+          ],
+          "references": ["electrical.winding", "electrical.capacitor"]
+        },
+        "hum-no-start": {
+          "prompt": "Hum without rotation is classic single-phase start failure: capacitor, start switch, or locked rotor.",
+          "diagnosis": "Start capacitor / start switch failure or locked rotor",
+          "checks": [
+            "Test or replace the start capacitor.",
+            "Check the centrifugal start switch contacts.",
+            "Confirm the pump shaft is not seized (locked rotor).",
+            "Measure amp draw at startup and running against the nameplate SFA/FLA."
+          ],
+          "references": ["electrical.capacitor", "electrical.winding"]
+        },
+        "no-power": {
+          "prompt": "No power at all: verify supply, breaker, and control box voltage under load.",
+          "diagnosis": "Open circuit, bad breaker, or loose connection",
+          "checks": [
+            "Measure L1/L2 voltage at the control box under load; check for drop below 10% of nameplate.",
+            "Inspect the breaker and panel connections for heat damage.",
+            "Check for a tripped overload relay (strong dry-run signal)."
+          ],
+          "references": ["electrical.voltage", "electrical.breaker"]
+        }
+      }
+    }
+  ]
+}

@@ -12,6 +12,10 @@ dist
 dist-ssr
 *.local
 
+# Native build config (may hold the remote Gemini API key - never commit)
+local.properties
+android/local.properties
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
