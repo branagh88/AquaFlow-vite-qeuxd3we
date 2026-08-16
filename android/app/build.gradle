@@ -1,5 +1,24 @@
 apply plugin: 'com.android.application'
 
+// ---------------------------------------------------------------------------
+// Tier-2 remote Gemini API key plumbing (SECURITY: security-hygiene skill).
+// The key is NEVER committed to the repo or embedded in the JS bundle. It is
+// read at build time from android/local.properties (gitignored) or from the
+// AQUAFLOW_GEMINI_API_KEY gradle property, compiled into BuildConfig, and
+// returned to JS at runtime by AquaFlowGenAIPlugin.getRemoteApiKey().
+// Default is an empty string: tiers silently skip remote Gemini when unset.
+// ---------------------------------------------------------------------------
+def aquaflowLocalProps = new Properties()
+def aquaflowLocalPropsFile = rootProject.file('local.properties')
+if (aquaflowLocalPropsFile.exists()) {
+    aquaflowLocalPropsFile.withInputStream { aquaflowLocalProps.load(it) }
+}
+def aquaflowGeminiApiKey = aquaflowLocalProps.getProperty('aquaflow.geminiApiKey')
+if (aquaflowGeminiApiKey == null || aquaflowGeminiApiKey.trim().isEmpty()) {
+    aquaflowGeminiApiKey = project.hasProperty('AQUAFLOW_GEMINI_API_KEY') ? project.property('AQUAFLOW_GEMINI_API_KEY') : ''
+}
+aquaflowGeminiApiKey = (aquaflowGeminiApiKey == null ? '' : aquaflowGeminiApiKey.toString()).trim()
+
 android {
     namespace = "com.petrockstudios.aquaflow"
     compileSdk = rootProject.ext.compileSdkVersion
@@ -10,6 +29,11 @@ android {
         versionCode 1
         versionName "1.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        buildConfigField "String", "AQUAFLOW_GEMINI_API_KEY", "\"${aquaflowGeminiApiKey}\""
+    }
+    buildFeatures {
+        buildConfig = true
+    }
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
              // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
@@ -36,6 +60,10 @@ dependencies {
     implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
     implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
     implementation project(':capacitor-android')
+    // Tier 1: Gemini Nano on-device via ML Kit GenAI (pinned; spec §7.1).
+    // If 1.0.0 fails to resolve from Google Maven, STOP and re-flag per §7.1
+    // (AICore SDK play-services-ai is the fallback) - do not guess versions.
+    implementation "com.google.mlkit:genai-inference:1.0.0"
     testImplementation "junit:junit:$junitVersion"
     androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
     androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"

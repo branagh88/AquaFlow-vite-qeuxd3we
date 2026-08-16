@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import threading
 import time
 from functools import lru_cache
 from pathlib import Path
@@ -296,6 +297,24 @@ def run(request: PiRequest, on_event: Optional[Callable[[dict], None]] = None,
         except OSError:
             pass
 
+    # Wedged-pi guard: a coding agent that emits NOTHING for this long is
+    # hung — dead LLM connection, stuck process, or a pi that silently wedged
+    # (seen: a builder that did 30 min of real edits then sat 20 HOURS with
+    # zero events). Tool calls that legitimately take minutes (builds) also
+    # emit nothing, so the threshold is deliberately generous + env-tunable.
+    silence_sec = float(os.environ.get("SSSF_SILENCE_TIMEOUT_SEC", "600"))
+    last_event_at = time.monotonic()
+    if silence_sec > 0:
+        def _silence_watchdog() -> None:
+            while True:
+                time.sleep(5)
+                if process.poll() is not None:
+                    return                    # already exited — nothing to do
+                if time.monotonic() - last_event_at > silence_sec:
+                    _abort("silence", f"no events for {silence_sec:.0f}s (wedged pi?)")
+                    return
+        threading.Thread(target=_silence_watchdog, daemon=True).start()
+
     with raw_path.open("a", encoding="utf-8") as raw:
         assert process.stdout is not None
         for line in process.stdout:
@@ -307,6 +326,7 @@ def run(request: PiRequest, on_event: Optional[Callable[[dict], None]] = None,
             if raw_bytes <= RAW_CAP_BYTES:
                 raw.write(line)
                 raw.flush()                  # events land on disk as they happen
+            last_event_at = time.monotonic() # any output proves the agent is alive
             line = line.strip()
             if not line:
                 continue

@@ -51,6 +51,10 @@
   <!-- AICore Service: classic script loaded BEFORE the app script so
        window.AquaFlowAICore is available to getAiReply() in script.js -->
   <script src="/src/aicore-service.js"></script>
+  <!-- Hybrid inference tiers: Tier 1 (Gemini Nano bridge + web stubs) and
+       Tier 2 (remote Gemini with Search Grounding) must load BEFORE script.js -->
+  <script src="/src/aquaflow-genai.js"></script>
+  <script src="/src/remote-gemini.js"></script>
   <script src="/src/script.js"></script>
 </body>
 </html>
